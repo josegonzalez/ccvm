@@ -669,3 +669,19 @@ func TestGCHasADeadline(t *testing.T) {
 		t.Fatal("gc ignored its deadline")
 	}
 }
+
+// A backend whose tool is not installed is absent, not broken. Reporting a raw
+// exec error for it is noise on any machine that does not use every backend.
+func TestDoctorDistinguishesAbsentFromBroken(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	f.PreflightErr = errors.New(`docker info: exec: "docker": executable file not found in $PATH`)
+	a, out, _ := newTestApp(t, f)
+
+	_ = cmdDoctor(a, nil)
+	if !strings.Contains(out.String(), "not installed") {
+		t.Errorf("out = %q, want an absent tool reported as such", out.String())
+	}
+	if strings.Contains(out.String(), "executable file not found") {
+		t.Errorf("out = %q, want the raw exec error kept out of it", out.String())
+	}
+}

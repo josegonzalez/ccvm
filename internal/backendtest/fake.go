@@ -40,10 +40,12 @@ type Fake struct {
 	// testing what happens partway through a sequence.
 	ExecErrOn string
 	// ListDelay makes List slow, for testing that callers bound it.
-	ListDelay   time.Duration
-	AutoRemove  bool
-	Destroyed   []string
-	CreateCalls int
+	ListDelay time.Duration
+	// PreflightErr makes Preflight fail, for testing how callers report it.
+	PreflightErr error
+	AutoRemove   bool
+	Destroyed    []string
+	CreateCalls  int
 }
 
 var (
@@ -61,7 +63,7 @@ func NewFake(name string) *Fake {
 
 func (f *Fake) Name() string { return f.BackendName }
 
-func (f *Fake) Preflight(ctx context.Context, s backend.Spec) error { return nil }
+func (f *Fake) Preflight(ctx context.Context, s backend.Spec) error { return f.PreflightErr }
 
 func (f *Fake) Create(ctx context.Context, s backend.Spec) (backend.Handle, error) {
 	f.mu.Lock()

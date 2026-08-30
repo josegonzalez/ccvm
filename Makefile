@@ -52,6 +52,8 @@ build:
 	GOOS=linux GOARCH=arm64 $(GO) build -o $(DIST)/ccvm-done-linux-arm64 ./cmd/ccvm-done
 	GOOS=linux GOARCH=amd64 $(GO) build -o $(DIST)/ccvm-init-linux-amd64 ./cmd/ccvm-init
 	GOOS=linux GOARCH=arm64 $(GO) build -o $(DIST)/ccvm-init-linux-arm64 ./cmd/ccvm-init
+	GOOS=linux GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o $(DIST)/ccvm-linux-amd64 ./cmd/ccvm
+	GOOS=linux GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o $(DIST)/ccvm-linux-arm64 ./cmd/ccvm
 	@echo "built $(DIST)/ccvm $(VERSION)"
 
 # The image build needs the guest binaries staged into the context first: they

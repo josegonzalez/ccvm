@@ -174,10 +174,17 @@ kubectl apply -f k8s/reaper.yaml
 scp k8s/proxmox-reaper.cron root@<node>:/etc/cron.d/ccvm-reaper
 ```
 
-The kubernetes manifest is verified: applied to a real cluster, with RBAC that
-grants deleting jobs and exec and nothing else — not deleting pods, creating
-jobs, or reading secrets. The proxmox cron file is written but untested, since
-that needs a node.
+Both are verified. The kubernetes manifest was applied to a real cluster, with
+RBAC that grants deleting jobs and exec and nothing else — not deleting pods,
+creating jobs, or reading secrets. The proxmox cron file was exercised in a
+Debian container running real cron against a containerized Proxmox: cron fired
+it on schedule and the reaper authenticated and queried the cluster. What is
+still untested there is guest boot, which needs a hypervisor.
+
+One trap worth repeating from that file: **cron silently ignores anything in
+/etc/cron.d not owned by root** — no error, no log line, the job simply never
+runs. Any copy that does not preserve root ownership leaves a reaper that looks
+installed and does nothing.
 
 `ccvm gc status` reports whether the agent is loaded and when its log was last
 written. A reaper that has silently stopped looks exactly like one with nothing

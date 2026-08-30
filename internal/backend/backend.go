@@ -167,6 +167,20 @@ type EphemeralReporter interface {
 // you never configured, and should complain loudly about one you did.
 var ErrNotConfigured = errors.New("not configured")
 
+// IsToolMissing reports whether an error means the backend's command-line tool
+// is not installed at all.
+//
+// A backend whose tool is absent is not broken, it is simply not present on
+// this machine — a Proxmox node has no orbctl, and a Mac without kubernetes has
+// no kubectl. Reporting those as failures fills the reaper's log with noise on
+// every run, which is how a real failure stops being noticed.
+func IsToolMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "executable file not found")
+}
+
 // Stopper is implemented by backends that can halt a machine without destroying
 // it. The reaper needs this to exist for `ccvm keep` to mean anything: a
 // machine that cannot be stopped and resumed is not durable.

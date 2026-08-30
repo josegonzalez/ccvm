@@ -3,6 +3,7 @@ package backend_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -310,5 +311,27 @@ func TestBackendNamesListsEveryRegistration(t *testing.T) {
 		if !found {
 			t.Errorf("Names() = %v, missing %q", names, want)
 		}
+	}
+}
+
+// A Proxmox node has no orbctl and a Mac without kubernetes has no kubectl.
+// Reporting those as failures fills the reaper's log on every run, which is how
+// a real failure stops being noticed.
+func TestIsToolMissing(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"absent binary", errors.New(`orbctl list: exec: "orbctl": executable file not found in $PATH`), true},
+		{"real failure", errors.New("orbctl list: exit 1: machine not found"), false},
+		{"nil", nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := backend.IsToolMissing(tt.err); got != tt.want {
+				t.Errorf("IsToolMissing = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

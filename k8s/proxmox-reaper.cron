@@ -4,12 +4,27 @@
 # the Mac is asleep, and it needs `pct` to check a guest for the done sentinel,
 # which cannot be done over the API.
 #
-#   scp k8s/proxmox-reaper.cron root@pve1:/etc/cron.d/ccvm-reaper
+#   make build
 #   scp dist/ccvm-linux-amd64 root@pve1:/usr/local/bin/ccvm
+#   scp k8s/proxmox-reaper.cron root@pve1:/etc/cron.d/ccvm-reaper
+#   ssh root@pve1 'chown root:root /etc/cron.d/ccvm-reaper && chmod 644 /etc/cron.d/ccvm-reaper'
+#
+# The chown is not decoration. cron SILENTLY IGNORES a file in /etc/cron.d that
+# is not owned by root: no error, no log line, the job simply never runs. Any
+# copy that does not preserve root ownership leaves a reaper that looks
+# installed and does nothing. Confirm with:
+#
+#   ssh root@pve1 'ls -l /etc/cron.d/ccvm-reaper; tail /var/log/ccvm-gc.log' 
 #
 # The node needs the same CCVM_PROXMOX_* settings a workstation uses; put them
 # in /etc/ccvm/environment, which this reads.
 #
 # Every two minutes: on proxmox the reaper is what acts on ccvm-done, so an
 # hourly schedule would make ending a session from inside appear broken.
+# cron runs with a minimal PATH that omits /usr/sbin, where pct lives. The
+# reaper needs pct to check a guest for the done sentinel, and without this the
+# check fails silently and sessions ended from inside are never collected.
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+SHELL=/bin/sh
+
 */2 * * * * root [ -f /etc/ccvm/environment ] && . /etc/ccvm/environment; /usr/local/bin/ccvm gc >> /var/log/ccvm-gc.log 2>&1

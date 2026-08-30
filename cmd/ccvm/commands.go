@@ -96,9 +96,10 @@ func (a *app) listAll(includeUnowned bool) ([]backend.Machine, error) {
 
 			ms, err := b.List(ctx)
 			if err != nil {
-				// Say nothing about a backend the user never configured;
-				// complain about one they did.
-				if !errors.Is(err, backend.ErrNotConfigured) {
+				// Say nothing about a backend the user never configured, or
+				// whose tool is not installed on this machine at all;
+				// complain about one they did set up.
+				if !errors.Is(err, backend.ErrNotConfigured) && !backend.IsToolMissing(err) {
 					fmt.Fprintf(a.err, "ccvm: %s backend unavailable: %s\n", name, condense(err))
 				}
 				return nil
@@ -943,12 +944,17 @@ func cmdDoctor(a *app, args []string) error {
 
 		if err := b.Preflight(a.ctx, s); err != nil {
 			failures++
-			// The error already says whether it is unconfigured or merely
-			// unreachable; prefixing a label here would say it twice.
-			if errors.Is(err, backend.ErrNotConfigured) {
+			switch {
+			case backend.IsToolMissing(err):
+				// Not a failure: the tool for this backend is simply not on
+				// this machine. A Proxmox node has no orbctl.
+				fmt.Fprintf(a.out, "%-9s not installed\n", name)
+			case errors.Is(err, backend.ErrNotConfigured):
+				// The error already says it is unconfigured; a label would
+				// say it twice.
 				fmt.Fprintf(a.out, "%-9s %v\n", name, err)
-			} else {
-				fmt.Fprintf(a.out, "%-9s unavailable: %v\n", name, err)
+			default:
+				fmt.Fprintf(a.out, "%-9s unavailable: %s\n", name, condense(err))
 			}
 			continue
 		}
