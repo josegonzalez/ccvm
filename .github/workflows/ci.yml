@@ -49,6 +49,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # The golden tests run the real binary, so they need it buildable rather
+      # than merely compiling as a package.
       - run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
       - name: Coverage gate
         if: matrix.os == 'ubuntu-latest'

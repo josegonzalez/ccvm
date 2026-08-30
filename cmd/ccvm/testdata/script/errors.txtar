@@ -1,0 +1,35 @@
+# The error taxonomy is a claim about exact output, so assert on exact output.
+
+# A flag that means nothing on the chosen backend is refused, not ignored.
+# Silently dropping it would leave the user believing they got a VM.
+env CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat-fake
+! exec ccvm up --detach --vm --backend docker $WORK
+stderr 'proxmox-only'
+
+# kubernetes has no host filesystem to reach, so a bind mount cannot exist
+# there. The refusal says what the backend does support.
+! exec ccvm up --detach --backend k8s --code mount $WORK
+stderr 'not available on the k8s backend'
+stderr 'git'
+
+# Contradictory flags are caught before anything is created.
+! exec ccvm up --detach --no-credential --remote-control $WORK
+stderr 'contradictory'
+
+# An unknown profile names the profile rather than failing somewhere downstream.
+! exec ccvm up --detach --profile ghost $WORK
+stderr 'ghost'
+
+# A subcommand invoked wrongly echoes what it received, so a stale binary and a
+# genuine mistake can be told apart.
+! exec ccvm profiles build
+stderr 'usage: ccvm profiles build'
+stderr 'got: ccvm profiles build'
+
+# Unknown subcommands list the alternatives.
+! exec ccvm profiles frobnicate
+stderr 'try list, lint, or build'
+! exec ccvm creds frobnicate
+stderr 'try check, import, or renew'
+! exec ccvm gc frobnicate
+stderr 'try install, uninstall, or status'

@@ -1,0 +1,15 @@
+# With no arguments, ccvm explains itself and exits 2 rather than doing nothing.
+! exec ccvm
+stdout 'ccvm runs each Claude Code session in its own disposable machine'
+stdout 'Commands:'
+stdout 'up .*start a session in a fresh machine'
+
+# Help is a success, not an error: asking for it is not a mistake.
+exec ccvm --help
+stdout 'Usage:'
+
+# An unknown command names what was typed and lists the alternatives, rather
+# than printing usage and leaving the reader to spot the difference.
+! exec ccvm frobnicate
+stderr 'unknown command "frobnicate"'
+stderr 'Commands:'

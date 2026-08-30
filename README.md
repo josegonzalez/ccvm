@@ -199,10 +199,16 @@ to do, so the log is the evidence.
 ## Testing
 
 ```
-make test           # unit, with -race
+make test           # unit and golden, with -race
 make cover          # coverage of shipped code
 make itest          # integration; see CCVM_ITEST_BACKENDS
 ```
+
+The golden tests under `cmd/ccvm/testdata/script` run the real binary and
+compare what a user actually sees. "A clear error when a machine cannot be
+created" is a claim about exact output, and exact output is what unit tests are
+worst at: they assert a substring and miss the layout, the ordering, and the
+stray blank line.
 
 Integration skips are opt-in: name the backends in `CCVM_ITEST_BACKENDS` and the
 suite fails, rather than skips, if one is unavailable. A suite that silently

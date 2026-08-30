@@ -903,3 +903,82 @@ func TestAttachOptionsEnableRemoteControlOnlyForALogin(t *testing.T) {
 		t.Errorf("login session = %q, want a named Remote Control session", loginCmd)
 	}
 }
+
+// A forward has to land on the port the ssh config already points at, or ssh
+// connects to nothing.
+func TestSSHPortForReadsTheRecordedPort(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	if err := a.ssh.Add(sshcfg.Host{Name: "cc-demo", HostName: "127.0.0.1", Port: 2231}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := a.sshPortFor("cc-demo")
+	if err != nil {
+		t.Fatalf("sshPortFor: %v", err)
+	}
+	if got != 2231 {
+		t.Errorf("port = %d, want 2231", got)
+	}
+}
+
+func TestSSHPortForUnknownMachine(t *testing.T) {
+	a, _, _ := newTestApp(t, backendtest.NewFake("docker"))
+	_, err := a.sshPortFor("cc-ghost")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "ccvm up") {
+		t.Errorf("err = %v, want it to say how to recover", err)
+	}
+}
+
+// Only kubernetes needs a forward: docker publishes a port at create time, and
+// orbstack and proxmox give machines addresses of their own.
+func TestHoldForwardIsANoopForLocalBackends(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	f.Seed(backend.Machine{Name: "cc-demo", State: backend.StateRunning}, nil)
+
+	stop, err := a.holdForward("cc-demo")
+	if err != nil {
+		t.Fatalf("holdForward: %v", err)
+	}
+	if stop == nil {
+		t.Fatal("holdForward returned no stop func")
+	}
+	stop()
+}
+
+func TestHoldForwardUnknownMachine(t *testing.T) {
+	a, _, _ := newTestApp(t, backendtest.NewFake("docker"))
+	if _, err := a.holdForward("cc-ghost"); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+// startForward must not fire for a backend that addresses machines directly.
+func TestStartForwardSkipsNonKubernetesBackends(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+
+	fwd, err := a.startForward(f, backend.Handle{Name: "cc-demo"}, backend.Spec{SSHPort: 2231})
+	if err != nil {
+		t.Fatalf("startForward: %v", err)
+	}
+	if fwd != nil {
+		t.Error("started a forward for a backend that does not need one")
+	}
+}
+
+func TestKubeDefaults(t *testing.T) {
+	a, _, _ := newTestApp(t, backendtest.NewFake("docker"))
+	t.Setenv("CCVM_KUBE_NAMESPACE", "")
+	if got := a.kubeNamespace(); got != "default" {
+		t.Errorf("kubeNamespace = %q, want default", got)
+	}
+	t.Setenv("CCVM_KUBE_NAMESPACE", "ccvm")
+	if got := a.kubeNamespace(); got != "ccvm" {
+		t.Errorf("kubeNamespace = %q", got)
+	}
+}

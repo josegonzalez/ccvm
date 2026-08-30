@@ -71,15 +71,7 @@ func cmdUp(a *app, args []string) error {
 		return fmt.Errorf("profile %q: %w", *profileName, err)
 	}
 
-	name := *nameOverride
-	if name == "" {
-		if name, err = a.uniqueName(projectDir); err != nil {
-			return err
-		}
-	}
-
 	spec := backend.Spec{
-		Name:      name,
 		Profile:   *profileName,
 		Image:     image,
 		Project:   projectDir,
@@ -94,6 +86,11 @@ func cmdUp(a *app, args []string) error {
 		CreatedAt: time.Now().UTC(),
 	}
 
+	// Resolved before anything queries a backend. A missing credential is the
+	// most common failure and the cheapest to detect, and checking it first
+	// keeps `ccvm up` from spending twenty seconds probing every backend only
+	// to refuse for a reason it already knew.
+	//
 	// A broker machine is where a claude.ai login is minted, so it is the one
 	// machine that cannot already have a credential to install. Without this
 	// the login path could never be bootstrapped.
@@ -120,6 +117,14 @@ func cmdUp(a *app, args []string) error {
 			"      permission prompts and can be driven from your phone. The machine is\n"+
 			"      disposable, but it holds a live claude.ai login.")
 	}
+
+	name := *nameOverride
+	if name == "" {
+		if name, err = a.uniqueName(projectDir); err != nil {
+			return err
+		}
+	}
+	spec.Name = name
 
 	if err := b.Preflight(a.ctx, spec); err != nil {
 		return &Fault{

@@ -1,0 +1,14 @@
+# With no credential at all, the message has to carry the whole recipe: this is
+# the first thing a new user hits, and a bare "no credential" leaves them stuck.
+! exec ccvm creds check
+stdout 'token      unavailable'
+stdout 'login      unavailable'
+stderr 'no usable Claude credential'
+
+# Starting a session says how to get a token, and how to get the login that
+# Remote Control needs instead.
+! exec ccvm up --detach $WORK
+stderr 'claude setup-token'
+stderr 'CLAUDE_CODE_OAUTH_TOKEN'
+stderr '--no-credential'
+stderr '/login'

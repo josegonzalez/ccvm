@@ -1,0 +1,11 @@
+# A missing credential is the most common failure and the cheapest to detect,
+# so it is reported before anything queries a backend. Probing every backend
+# first meant twenty seconds of waiting to be told something already known.
+#
+# The proof is that this refuses without a reachable backend anywhere.
+env CCVM_PROXMOX_URL=https://192.0.2.1:8006
+env CCVM_PROXMOX_TOKEN_ID=x@pam!y
+env CCVM_PROXMOX_SECRET=z
+! exec ccvm up --detach $WORK
+stderr 'claude setup-token'
+! stderr 'proxmox'
