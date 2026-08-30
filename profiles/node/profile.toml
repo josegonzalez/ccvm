@@ -1,0 +1,21 @@
+description = "Node LTS with pnpm"
+extends     = "base"
+
+[backend.docker]
+image = "ccvm/node:latest"
+
+[backend.k8s]
+image = "ccvm/node:latest"
+
+[backend.orbstack]
+template = "ccvm-node"
+
+[backend.proxmox]
+lxc_template = 9003
+vm_template  = 9103
+
+[resources]
+memory = "8G"
+
+[provision]
+packages = ["pnpm"]

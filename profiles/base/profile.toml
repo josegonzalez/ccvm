@@ -1,0 +1,24 @@
+description = "Debian with claude, git, tmux, and sshd"
+
+[backend.docker]
+image = "ccvm/base:latest"
+
+[backend.k8s]
+image = "ccvm/base:latest"
+
+[backend.orbstack]
+template = "ccvm-base"
+
+[backend.proxmox]
+lxc_template = 9000
+vm_template  = 9100
+
+[defaults]
+backend   = "docker"
+code_mode = "mount"
+ttl       = "12h"
+
+[resources]
+cpus   = 2
+memory = "4G"
+disk   = "16G"

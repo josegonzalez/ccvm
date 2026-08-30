@@ -1,0 +1,26 @@
+description = "Go toolchain, delve, golangci-lint"
+extends     = "base"
+
+[backend.docker]
+image = "ccvm/go:latest"
+
+[backend.k8s]
+image = "ccvm/go:latest"
+
+[backend.orbstack]
+template = "ccvm-go"
+
+[backend.proxmox]
+lxc_template = 9002
+vm_template  = 9102
+
+[resources]
+cpus   = 4
+memory = "8G"
+disk   = "32G"
+
+[provision]
+packages = ["delve", "golangci-lint"]
+
+[env]
+GOFLAGS = "-mod=mod"
