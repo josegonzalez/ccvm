@@ -16,11 +16,16 @@ apt-get install -y -qq --no-install-recommends \
 
 # Claude Code. Pinned by the caller when CLAUDE_VERSION is set, so a template
 # rebuild does not silently change the agent version under existing sessions.
-if ! command -v claude >/dev/null 2>&1; then
+if [ ! -x /usr/local/bin/claude ]; then
     curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_VERSION:-latest}"
+    mkdir -p /usr/local/bin
     ln -sf /root/.local/bin/claude /usr/local/bin/claude
 fi
-claude --version
+# Checked by absolute path rather than through PATH: this script runs from
+# whatever environment the backend provides, and `pct exec` supplies a minimal
+# one that omits /usr/local/bin. Relying on PATH made the check fail on a
+# perfectly good install.
+/usr/local/bin/claude --version
 
 # sshd host keys and the directories ccvm writes into at spawn.
 ssh-keygen -A

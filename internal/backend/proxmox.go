@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"strconv"
@@ -24,6 +25,14 @@ type Proxmox struct {
 
 	// Kind is "lxc" or "qemu", chosen per spec by --vm.
 	Kind string
+
+	// Log receives notes about decisions the caller did not ask for, such as
+	// falling back to a full clone.
+	Log io.Writer
+
+	// WaitTimeout bounds how long Wait polls for a guest to answer over ssh.
+	// Zero uses the default.
+	WaitTimeout time.Duration
 
 	// configErr defers a missing-configuration failure to first use.
 	// Constructing a backend must never fail: `ccvm ls` and `ccvm doctor` span
@@ -193,7 +202,7 @@ func (p *Proxmox) Create(ctx context.Context, s Spec) (Handle, error) {
 
 	var lastErr error
 	for attempt := 0; attempt < pveCloneAttempts; attempt++ {
-		vmid, err := p.API.nextID(ctx)
+		vmid, err := p.nextFreeID(ctx)
 		if err != nil {
 			return Handle{}, err
 		}
@@ -201,7 +210,8 @@ func (p *Proxmox) Create(ctx context.Context, s Spec) (Handle, error) {
 		form := url.Values{
 			"newid":    []string{strconv.Itoa(vmid)},
 			"hostname": []string{s.Name},
-			// Linked clone: fast and cheap, when the storage supports it.
+			// Linked clone: near-instant and near-free, when the storage
+			// supports it. ZFS and Ceph do; directory and LVM storage do not.
 			"full": []string{"0"},
 		}
 		if p.Cfg.ProxmoxStorage != "" {
@@ -209,15 +219,23 @@ func (p *Proxmox) Create(ctx context.Context, s Spec) (Handle, error) {
 		}
 
 		task, err := p.API.clone(ctx, node, kind, tplID, vmid, form)
-		if err != nil {
-			if isVMIDTaken(err) {
-				lastErr = err
-				continue
-			}
-			return Handle{}, fmt.Errorf("clone template %d on %s: %w", tplID, node, err)
+		if err == nil {
+			err = p.API.waitTask(ctx, node, task, pveTaskTimeout)
 		}
 
-		if err := p.API.waitTask(ctx, node, task, pveTaskTimeout); err != nil {
+		// Storage that cannot do linked clones says so rather than doing a full
+		// one, so the retry is ours to make. It is slower and uses real disk,
+		// which is worth saying out loud rather than silently absorbing.
+		if err != nil && isLinkedCloneUnsupported(err) {
+			p.logf("storage does not support linked clones; falling back to a full clone of %d (slower)", tplID)
+			form.Set("full", "1")
+			task, err = p.API.clone(ctx, node, kind, tplID, vmid, form)
+			if err == nil {
+				err = p.API.waitTask(ctx, node, task, pveTaskTimeout)
+			}
+		}
+
+		if err != nil {
 			if isVMIDTaken(err) {
 				lastErr = err
 				continue
@@ -236,6 +254,34 @@ func (p *Proxmox) Create(ctx context.Context, s Spec) (Handle, error) {
 		return h, nil
 	}
 	return Handle{}, fmt.Errorf("could not allocate a free vmid after %d attempts: %w", pveCloneAttempts, lastErr)
+}
+
+// nextFreeID picks a vmid inside ccvm's reserved range.
+//
+// /cluster/nextid returns the cluster's next free id, which on any cluster with
+// existing guests is nothing to do with ccvm's range — and a guest outside that
+// range has no derivable address. So the range is scanned here instead.
+//
+// Like nextid this is advisory rather than a reservation: a concurrent create
+// can take the id before the clone lands, which is why that collision retries.
+func (p *Proxmox) nextFreeID(ctx context.Context) (int, error) {
+	res, err := p.API.resources(ctx)
+	if err != nil {
+		return 0, err
+	}
+	used := make(map[int]bool, len(res))
+	for _, r := range res {
+		used[r.VMID] = true
+	}
+
+	base := p.vmidBase()
+	for host := pveMinHost; host <= pveMaxHost; host++ {
+		if !used[base+host] {
+			return base + host, nil
+		}
+	}
+	return 0, fmt.Errorf("no free vmid in the ccvm range %d-%d; destroy some machines with `ccvm rm`",
+		base+pveMinHost, base+pveMaxHost)
 }
 
 // configure sets the guest's address and the metadata the listing reads back.
@@ -279,7 +325,11 @@ func (p *Proxmox) Start(ctx context.Context, h Handle) error {
 // Wait blocks until the guest answers over ssh. A running guest is not the same
 // as a reachable one: the kernel is up long before sshd is.
 func (p *Proxmox) Wait(ctx context.Context, h Handle) error {
-	deadline := time.Now().Add(3 * time.Minute)
+	timeout := p.WaitTimeout
+	if timeout <= 0 {
+		timeout = 3 * time.Minute
+	}
+	deadline := time.Now().Add(timeout)
 	var last error
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
@@ -296,7 +346,11 @@ func (p *Proxmox) Wait(ctx context.Context, h Handle) error {
 		case <-time.After(2 * time.Second):
 		}
 	}
-	return fmt.Errorf("guest %s did not become reachable: %w", h.Name, last)
+	return fmt.Errorf("guest %s did not become reachable over ssh: %w\n"+
+		"Unlike the other backends, proxmox reaches a guest only over ssh, so it cannot "+
+		"install its own key first. The template must already contain ccvm's public key "+
+		"in /root/.ssh/authorized_keys — see `ccvm profiles build --backend proxmox`",
+		h.Name, last)
 }
 
 // SSHTarget is the guest's derived address. Proxmox guests are real hosts on
@@ -327,7 +381,15 @@ func (p *Proxmox) sshArgs(h Handle) []string {
 }
 
 func (p *Proxmox) Exec(ctx context.Context, h Handle, argv ...string) ([]byte, error) {
-	return p.Runner.Run(ctx, append(p.sshArgs(h), argv...)...)
+	// ssh joins its remote arguments with spaces and hands the result to the
+	// login shell, so the argv has to be quoted into a single command string.
+	// Passing the words through unquoted loses the grouping: `sh -c "echo hi"`
+	// arrives as `sh -c echo hi`, which runs echo with no arguments and
+	// returns nothing rather than failing.
+	//
+	// The other backends take an argv array directly, so this is proxmox's
+	// alone.
+	return p.Runner.Run(ctx, append(p.sshArgs(h), run.ShellQuote(argv))...)
 }
 
 func (p *Proxmox) Push(ctx context.Context, h Handle, src, dst string) error {
@@ -415,6 +477,12 @@ func (p *Proxmox) List(ctx context.Context) ([]Machine, error) {
 			Node:    r.Node,
 			State:   normalizePVEState(r.Status),
 		}
+		// The aggregate lags reality by several seconds, so a machine created
+		// moments ago still reads as stopped there. Enumerate from it, then ask
+		// each guest for its actual state.
+		if live, err := p.API.currentStatus(ctx, r.Node, p.Kind, r.VMID); err == nil {
+			m.State = normalizePVEState(live)
+		}
 		if addr, err := p.AddressFor(r.VMID); err == nil {
 			m.SSH = "root@" + addr
 		}
@@ -474,8 +542,23 @@ func (p *Proxmox) Destroy(ctx context.Context, h Handle) error {
 	return p.API.waitTask(ctx, h.Node, task, pveTaskTimeout)
 }
 
+func (p *Proxmox) logf(format string, args ...any) {
+	if p.Log == nil {
+		return
+	}
+	fmt.Fprintf(p.Log, "ccvm: "+format+"\n", args...)
+}
+
 func pveDescription(s Spec) string {
 	return fmt.Sprintf("ccvm session %s\nproject: %s\nprofile: %s\n", s.Name, s.Project, s.Profile)
+}
+
+// isLinkedCloneUnsupported matches the storage refusing a linked clone, which
+// is a property of the storage type rather than a failure worth reporting.
+func isLinkedCloneUnsupported(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "linked clone feature") &&
+		strings.Contains(msg, "not available")
 }
 
 func isVMIDTaken(err error) bool {

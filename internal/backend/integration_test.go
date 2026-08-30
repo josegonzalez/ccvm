@@ -70,6 +70,10 @@ func configFromEnv() backend.Config {
 		ProxmoxSecret:   os.Getenv("CCVM_ITEST_PROXMOX_SECRET"),
 		ProxmoxStorage:  os.Getenv("CCVM_ITEST_PROXMOX_STORAGE"),
 		ProxmoxInsecure: os.Getenv("CCVM_ITEST_PROXMOX_INSECURE") != "",
+		ProxmoxBridge:   os.Getenv("CCVM_PROXMOX_BRIDGE"),
+		ProxmoxSubnet:   os.Getenv("CCVM_PROXMOX_SUBNET"),
+		ProxmoxGateway:  os.Getenv("CCVM_PROXMOX_GATEWAY"),
+		ProxmoxSSHKey:   os.Getenv("CCVM_PROXMOX_SSH_KEY"),
 		KubeNamespace:   envOr("CCVM_ITEST_KUBE_NAMESPACE", "default"),
 		KubeContext:     os.Getenv("CCVM_ITEST_KUBE_CONTEXT"),
 	}

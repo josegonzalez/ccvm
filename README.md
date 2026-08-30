@@ -162,6 +162,52 @@ fixes auto-remove when a container is created, so a machine started without
 `--keep` will still be deleted if it stops. `ccvm keep` says so rather than
 implying a durability it cannot deliver.
 
+## Proxmox setup
+
+Proxmox differs from the other backends in one structural way: ccvm reaches a
+guest only over ssh, so it cannot install its own key first the way it does on
+docker, orbstack, and kubernetes. **The template must already contain ccvm's
+public key** in `/root/.ssh/authorized_keys`, or every guest comes up
+unreachable.
+
+Building one, from a node:
+
+```
+pveam update && pveam download local debian-13-standard_13.6-1_amd64.tar.zst
+pct create 9000 local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst \
+    --hostname ccvm-base --cores 2 --memory 2048 --rootfs local:8 \
+    --net0 name=eth0,bridge=vmbr0,ip=dhcp \
+    --features nesting=1,keyctl=1 --unprivileged 1
+pct start 9000
+pct push 9000 profiles/base/build.sh /root/build.sh --perms 755
+pct exec 9000 -- sh /root/build.sh
+pct exec 9000 -- mkdir -p /root/.ssh
+pct push 9000 ~/.ssh/ccvm_ed25519.pub /root/.ssh/authorized_keys --perms 600
+pct exec 9000 -- chown -R root:root /root/.ssh
+pct stop 9000 && pct template 9000
+```
+
+Then point a profile's `[backend.proxmox].lxc_template` at 9000.
+
+Settings come from the environment, and the network ones are not optional if
+your cluster differs from the defaults:
+
+```
+CCVM_PROXMOX_URL, CCVM_PROXMOX_TOKEN_ID, CCVM_PROXMOX_SECRET
+CCVM_PROXMOX_NODE       pin a node, or the least loaded one is chosen
+CCVM_PROXMOX_BRIDGE     default vmbr0
+CCVM_PROXMOX_SUBNET     a /16 prefix, default 10.10
+CCVM_PROXMOX_GATEWAY    default <subnet>.0.1
+CCVM_PROXMOX_SSH_KEY    default ~/.ssh/ccvm_ed25519
+CCVM_PROXMOX_INSECURE   set for a private CA
+```
+
+Guests get deterministic addresses derived from their vmid, and ccvm allocates
+vmids from its own reserved range rather than the cluster's next free id — a
+guest outside that range has no derivable address. Linked clones are used where
+the storage supports them, with a full clone as the fallback; directory and LVM
+storage refuse linked clones, ZFS and Ceph allow them.
+
 ## The reaper
 
 `ccvm gc` collects machines past their TTL and machines whose session ended, but
@@ -226,7 +272,12 @@ API drift that frozen fixtures cannot — they keep passing against a release th
 changed a response shape. That job is non-gating: it depends on someone else's
 repackaging of a distro, and a flaky required check is one you learn to ignore.
 
-Hosted runners have no nested virtualization, so **proxmox guest boot is never
-tested in CI**, and OrbStack has no automated coverage at all — it is macOS-only
-and GUI-installed. A green badge does not cover either. `make itest-local` is
-the only check, and it is a process dependency rather than a guarantee.
+Proxmox guest boot is exercised against a containerized Proxmox: LXC needs
+namespaces rather than KVM, so guests really do boot there, and the full suite
+passes including ssh into a guest and reading a record back from a stopped one.
+What that cannot cover is a VM rather than a container, which needs KVM, and
+anything specific to real cluster storage or networking.
+
+OrbStack has no automated coverage at all — it is macOS-only and
+GUI-installed — so a green badge does not cover it. `make itest-local` is the
+only check there, and it is a process dependency rather than a guarantee.

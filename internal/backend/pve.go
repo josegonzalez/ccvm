@@ -285,9 +285,13 @@ func (c *pveClient) waitTask(ctx context.Context, node string, id upid, timeout 
 	}
 }
 
+// setConfig updates a guest's configuration.
+//
+// PUT rather than POST: the LXC config endpoint implements only GET and PUT,
+// and answers a POST with 501. QEMU accepts both, so PUT serves each.
 func (c *pveClient) setConfig(ctx context.Context, node, kind string, vmid int, form url.Values) error {
 	path := fmt.Sprintf("/api2/json/nodes/%s/%s/%d/config", node, kind, vmid)
-	return c.do(ctx, http.MethodPost, path, form, nil)
+	return c.do(ctx, http.MethodPut, path, form, nil)
 }
 
 func (c *pveClient) getConfig(ctx context.Context, node, kind string, vmid int) (map[string]any, error) {
@@ -299,6 +303,25 @@ func (c *pveClient) getConfig(ctx context.Context, node, kind string, vmid int) 
 		return nil, err
 	}
 	return resp.Data, nil
+}
+
+// currentStatus reads a guest's live state.
+//
+// /cluster/resources is a periodically refreshed aggregate and lags reality by
+// several seconds, so a machine that was just started still reads as stopped
+// there. That is fine for enumerating guests and wrong for reporting their
+// state.
+func (c *pveClient) currentStatus(ctx context.Context, node, kind string, vmid int) (string, error) {
+	var resp struct {
+		Data struct {
+			Status string `json:"status"`
+		} `json:"data"`
+	}
+	path := fmt.Sprintf("/api2/json/nodes/%s/%s/%d/status/current", node, kind, vmid)
+	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return "", err
+	}
+	return resp.Data.Status, nil
 }
 
 func (c *pveClient) status(ctx context.Context, node, kind string, vmid int, action string) (upid, error) {

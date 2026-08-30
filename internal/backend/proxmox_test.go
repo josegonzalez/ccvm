@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/josegonzalez/ccvm/internal/backend"
 	"github.com/josegonzalez/ccvm/internal/run"
@@ -28,6 +29,11 @@ type pveStub struct {
 func newPVEStub(t *testing.T) *pveStub {
 	t.Helper()
 	s := &pveStub{handlers: map[string]http.HandlerFunc{}}
+	// Allocating a vmid consults the cluster's resources, so every Create needs
+	// this. Tests that care about what is already allocated override it.
+	s.handlers["/api2/json/cluster/resources"] = func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{}})
+	}
 	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.requests = append(s.requests, r.Method+" "+r.URL.Path)
@@ -224,14 +230,14 @@ func TestProxmoxCreateWaitsForCloneTaskBeforeConfiguring(t *testing.T) {
 			"data": map[string]any{"status": status, "exitstatus": "OK"},
 		})
 	})
-	s.json("/api2/json/nodes/pve1/lxc/4312/config", "")
+	s.json("/api2/json/nodes/pve1/lxc/4002/config", "")
 
 	p, _ := newProxmox(t, s)
 	h, err := p.Create(context.Background(), pveSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if h.ID != "4312" || h.Node != "pve1" {
+	if h.ID != "4002" || h.Node != "pve1" {
 		t.Errorf("handle = %+v", h)
 	}
 	if polls < 2 {
@@ -246,7 +252,7 @@ func TestProxmoxCreateWaitsForCloneTaskBeforeConfiguring(t *testing.T) {
 		if strings.Contains(req, "/clone") {
 			cloneAt = i
 		}
-		if strings.HasSuffix(req, "/4312/config") && configAt == -1 {
+		if strings.HasSuffix(req, "/4002/config") && configAt == -1 {
 			configAt = i
 		}
 	}
@@ -282,33 +288,38 @@ func TestProxmoxCreateSurfacesTaskLogOnFailure(t *testing.T) {
 func TestProxmoxCreateRetriesOnVMIDCollision(t *testing.T) {
 	s := newPVEStub(t)
 
-	ids := []string{"4312", "4313"}
-	idx := 0
-	s.on("/api2/json/cluster/nextid", func(w http.ResponseWriter, r *http.Request) {
-		id := ids[min(idx, len(ids)-1)]
-		idx++
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": id})
+	// The first attempt is told the id is taken; allocation then scans past it.
+	seen := 0
+	s.on("/api2/json/cluster/resources", func(w http.ResponseWriter, r *http.Request) {
+		data := []any{}
+		if seen > 0 {
+			data = append(data, map[string]any{
+				"vmid": 4002, "node": "pve1", "name": "cc-taken", "type": "lxc",
+			})
+		}
+		seen++
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
 	})
 
 	attempts := 0
 	s.on("/api2/json/nodes/pve1/lxc/9000/clone", func(w http.ResponseWriter, r *http.Request) {
 		attempts++
 		if attempts == 1 {
-			http.Error(w, "CT 4312 already exists on node 'pve1'", http.StatusInternalServerError)
+			http.Error(w, "CT 4002 already exists on node 'pve1'", http.StatusInternalServerError)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": "UPID:pve1:clone:"})
 	})
 	s.json("/api2/json/nodes/pve1/tasks/UPID:pve1:clone:/status",
 		map[string]any{"status": "stopped", "exitstatus": "OK"})
-	s.json("/api2/json/nodes/pve1/lxc/4313/config", "")
+	s.json("/api2/json/nodes/pve1/lxc/4003/config", "")
 
 	p, _ := newProxmox(t, s)
 	h, err := p.Create(context.Background(), pveSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if h.ID != "4313" {
+	if h.ID != "4003" {
 		t.Errorf("ID = %q, want the retry to have taken a fresh vmid", h.ID)
 	}
 	if attempts != 2 {
@@ -345,10 +356,10 @@ func TestProxmoxCreateDestroysGuestItCannotConfigure(t *testing.T) {
 	s.json("/api2/json/nodes/pve1/lxc/9000/clone", "UPID:pve1:clone:")
 	s.json("/api2/json/nodes/pve1/tasks/UPID:pve1:clone:/status",
 		map[string]any{"status": "stopped", "exitstatus": "OK"})
-	s.fail("/api2/json/nodes/pve1/lxc/4312/config", http.StatusInternalServerError, "bad bridge")
+	s.fail("/api2/json/nodes/pve1/lxc/4002/config", http.StatusInternalServerError, "bad bridge")
 
 	destroyed := false
-	s.on("/api2/json/nodes/pve1/lxc/4312", func(w http.ResponseWriter, r *http.Request) {
+	s.on("/api2/json/nodes/pve1/lxc/4002", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodDelete {
 			destroyed = true
 		}
@@ -373,7 +384,7 @@ func TestProxmoxCreateSetsNestingAndAddress(t *testing.T) {
 	s.json("/api2/json/nodes/pve1/lxc/9000/clone", "UPID:pve1:clone:")
 	s.json("/api2/json/nodes/pve1/tasks/UPID:pve1:clone:/status",
 		map[string]any{"status": "stopped", "exitstatus": "OK"})
-	s.on("/api2/json/nodes/pve1/lxc/4312/config", func(w http.ResponseWriter, r *http.Request) {
+	s.on("/api2/json/nodes/pve1/lxc/4002/config", func(w http.ResponseWriter, r *http.Request) {
 		body := make([]byte, r.ContentLength)
 		_, _ = r.Body.Read(body)
 		gotForm = string(body)
@@ -384,7 +395,7 @@ func TestProxmoxCreateSetsNestingAndAddress(t *testing.T) {
 	if _, err := p.Create(context.Background(), pveSpec()); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	for _, want := range []string{"10.10.1.56", "nesting%3D1", "keyctl%3D1", "tags=ccvm"} {
+	for _, want := range []string{"10.10.0.2", "nesting%3D1", "keyctl%3D1", "tags=ccvm"} {
 		if !strings.Contains(gotForm, want) {
 			t.Errorf("config form missing %q:\n%s", want, gotForm)
 		}
@@ -398,7 +409,8 @@ func TestProxmoxSessionRecordSurvivesAStoppedGuest(t *testing.T) {
 	stored := ""
 	s := newPVEStub(t)
 	s.on("/api2/json/nodes/pve1/lxc/4312/config", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
+		// Anything but a read is the write path; the config endpoint takes PUT.
+		if r.Method != http.MethodGet {
 			body := make([]byte, r.ContentLength)
 			_, _ = r.Body.Read(body)
 			form := string(body)
@@ -516,7 +528,7 @@ func TestProxmoxPicksNodeWithMostFreeMemory(t *testing.T) {
 	s.json("/api2/json/nodes/pve2/lxc/9000/clone", "UPID:pve2:clone:")
 	s.json("/api2/json/nodes/pve2/tasks/UPID:pve2:clone:/status",
 		map[string]any{"status": "stopped", "exitstatus": "OK"})
-	s.json("/api2/json/nodes/pve2/lxc/4312/config", "")
+	s.json("/api2/json/nodes/pve2/lxc/4002/config", "")
 
 	cfg := s.config(false)
 	cfg.ProxmoxNode = "" // let it choose
@@ -599,4 +611,254 @@ func errorsIs(err, target error) bool {
 		err = u.Unwrap()
 	}
 	return false
+}
+
+// Directory and LVM storage refuse linked clones, and Proxmox says so rather
+// than doing a full one. The retry is ours to make, or ccvm works only on ZFS
+// and Ceph.
+func TestProxmoxFallsBackToAFullClone(t *testing.T) {
+	s := newPVEStub(t)
+	s.json("/api2/json/cluster/nextid", "4312")
+
+	var forms []string
+	s.on("/api2/json/nodes/pve1/lxc/9000/clone", func(w http.ResponseWriter, r *http.Request) {
+		body := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(body)
+		form := string(body)
+		forms = append(forms, form)
+
+		if strings.Contains(form, "full=0") {
+			http.Error(w,
+				`{"data":null,"message":"Linked clone feature for 'local:9000/base-9000-disk-0.raw' is not available\n"}`,
+				http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": "UPID:pve1:clone:"})
+	})
+	s.json("/api2/json/nodes/pve1/tasks/UPID:pve1:clone:/status",
+		map[string]any{"status": "stopped", "exitstatus": "OK"})
+	s.json("/api2/json/nodes/pve1/lxc/4002/config", "")
+
+	var log strings.Builder
+	p, _ := newProxmox(t, s)
+	p.Log = &log
+
+	h, err := p.Create(context.Background(), pveSpec())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if h.ID != "4002" {
+		t.Errorf("ID = %q", h.ID)
+	}
+	if len(forms) != 2 {
+		t.Fatalf("clone attempts = %d, want a linked attempt then a full one", len(forms))
+	}
+	if !strings.Contains(forms[0], "full=0") || !strings.Contains(forms[1], "full=1") {
+		t.Errorf("attempts = %v, want full=0 then full=1", forms)
+	}
+	// A full clone is slower and uses real disk, so it is worth saying rather
+	// than silently absorbing.
+	if !strings.Contains(log.String(), "full clone") {
+		t.Errorf("log = %q, want the fallback reported", log.String())
+	}
+}
+
+// A clone that fails for any other reason must not be retried as a full clone:
+// that would turn one clear error into two confusing ones.
+func TestProxmoxDoesNotFallBackOnUnrelatedFailures(t *testing.T) {
+	s := newPVEStub(t)
+	s.json("/api2/json/cluster/nextid", "4312")
+
+	attempts := 0
+	s.on("/api2/json/nodes/pve1/lxc/9000/clone", func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		http.Error(w, `{"message":"storage 'local' does not exist"}`, http.StatusInternalServerError)
+	})
+
+	p, _ := newProxmox(t, s)
+	if _, err := p.Create(context.Background(), pveSpec()); err == nil {
+		t.Fatal("expected an error")
+	}
+	if attempts != 1 {
+		t.Errorf("clone attempts = %d, want no retry for an unrelated failure", attempts)
+	}
+}
+
+// /cluster/nextid returns the cluster's next free id, which on any cluster with
+// existing guests is nothing to do with ccvm's reserved range — and a guest
+// outside that range has no derivable address.
+func TestProxmoxAllocatesInsideItsOwnRange(t *testing.T) {
+	s := newPVEStub(t)
+	// A cluster whose next free id is 100, as a fresh one reports.
+	s.json("/api2/json/cluster/nextid", "100")
+	s.json("/api2/json/cluster/resources", []map[string]any{
+		{"vmid": 9000, "node": "pve1", "name": "ccvm-base", "type": "lxc", "template": 1},
+	})
+	s.json("/api2/json/nodes/pve1/lxc/9000/clone", "UPID:pve1:clone:")
+	s.json("/api2/json/nodes/pve1/tasks/UPID:pve1:clone:/status",
+		map[string]any{"status": "stopped", "exitstatus": "OK"})
+	s.json("/api2/json/nodes/pve1/lxc/4002/config", "")
+
+	p, _ := newProxmox(t, s)
+	h, err := p.Create(context.Background(), pveSpec())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if h.ID != "4002" {
+		t.Errorf("ID = %q, want the first free id in ccvm's range, not the cluster's next", h.ID)
+	}
+	// And it must have an address, which is the whole reason for the range.
+	if _, err := p.AddressFor(4002); err != nil {
+		t.Errorf("allocated a vmid with no address: %v", err)
+	}
+}
+
+// Existing ccvm guests are skipped rather than collided with.
+func TestProxmoxSkipsUsedIDsInItsRange(t *testing.T) {
+	s := newPVEStub(t)
+	s.json("/api2/json/cluster/resources", []map[string]any{
+		{"vmid": 4002, "node": "pve1", "name": "cc-a", "type": "lxc", "tags": "ccvm"},
+		{"vmid": 4003, "node": "pve1", "name": "cc-b", "type": "lxc", "tags": "ccvm"},
+	})
+	s.json("/api2/json/nodes/pve1/lxc/9000/clone", "UPID:pve1:clone:")
+	s.json("/api2/json/nodes/pve1/tasks/UPID:pve1:clone:/status",
+		map[string]any{"status": "stopped", "exitstatus": "OK"})
+	s.json("/api2/json/nodes/pve1/lxc/4004/config", "")
+
+	p, _ := newProxmox(t, s)
+	h, err := p.Create(context.Background(), pveSpec())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if h.ID != "4004" {
+		t.Errorf("ID = %q, want the first free id past the ones in use", h.ID)
+	}
+}
+
+// The LXC config endpoint implements only GET and PUT, and answers a POST with
+// 501. Getting this wrong made every guest fail immediately after cloning.
+func TestProxmoxUpdatesConfigWithPut(t *testing.T) {
+	var methods []string
+	s := newPVEStub(t)
+	s.json("/api2/json/nodes/pve1/lxc/9000/clone", "UPID:pve1:clone:")
+	s.json("/api2/json/nodes/pve1/tasks/UPID:pve1:clone:/status",
+		map[string]any{"status": "stopped", "exitstatus": "OK"})
+	s.on("/api2/json/nodes/pve1/lxc/4002/config", func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": ""})
+	})
+
+	p, _ := newProxmox(t, s)
+	if _, err := p.Create(context.Background(), pveSpec()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for _, m := range methods {
+		if m == http.MethodPost {
+			t.Errorf("config updated with POST, which LXC answers with 501")
+		}
+	}
+	if len(methods) == 0 || methods[0] != http.MethodPut {
+		t.Errorf("methods = %v, want PUT", methods)
+	}
+}
+
+// proxmox reaches a guest only over ssh, so it cannot install its own key
+// first the way docker, orbstack, and kubernetes do. When a template lacks the
+// key the symptom is an unreachable guest, which points nowhere useful on its
+// own.
+func TestProxmoxWaitExplainsTheTemplateKeyRequirement(t *testing.T) {
+	s := newPVEStub(t)
+	p, f := newProxmox(t, s)
+	f.On("ssh").Fail(255, "Permission denied (publickey).")
+	p.WaitTimeout = 100 * time.Millisecond
+
+	err := p.Wait(context.Background(), backend.Handle{Name: "cc-foo", ID: "4002"})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "authorized_keys") {
+		t.Errorf("err = %v\nwant it to name the template requirement", err)
+	}
+}
+
+// ssh joins remote arguments with spaces and hands them to the login shell, so
+// argv has to be quoted into one command string. Unquoted, `sh -c "echo hi"`
+// arrives as `sh -c echo hi` and silently returns nothing.
+func TestProxmoxExecQuotesForTheRemoteShell(t *testing.T) {
+	s := newPVEStub(t)
+	p, f := newProxmox(t, s)
+	f.On("ssh").Stdout("alive\n")
+
+	h := backend.Handle{ID: "4002"}
+	if _, err := p.Exec(context.Background(), h, "sh", "-c", "echo alive"); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	call := f.Find("ssh")
+	last := call[len(call)-1]
+	if last != `sh -c 'echo alive'` {
+		t.Errorf("remote command = %q, want the argv quoted into one string", last)
+	}
+}
+
+// A path with a space must survive to the guest as one argument.
+func TestProxmoxExecHandlesAwkwardArguments(t *testing.T) {
+	s := newPVEStub(t)
+	p, f := newProxmox(t, s)
+	f.On("ssh").Stdout("")
+
+	h := backend.Handle{ID: "4002"}
+	if _, err := p.Exec(context.Background(), h, "ls", "/work dir"); err != nil {
+		t.Fatal(err)
+	}
+	call := f.Find("ssh")
+	if last := call[len(call)-1]; last != `ls '/work dir'` {
+		t.Errorf("remote command = %q", last)
+	}
+}
+
+// /cluster/resources is a periodically refreshed aggregate that lags reality,
+// so a machine created moments ago still reads as stopped there. Enumerating
+// from it is fine; reporting state from it is not.
+func TestProxmoxListReportsLiveStateNotTheStaleAggregate(t *testing.T) {
+	s := newPVEStub(t)
+	s.json("/api2/json/cluster/resources", []map[string]any{
+		{"vmid": 4002, "node": "pve1", "name": "cc-foo", "status": "stopped",
+			"type": "lxc", "tags": "ccvm", "template": 0},
+	})
+	// The guest itself says otherwise, and it is the one that knows.
+	s.json("/api2/json/nodes/pve1/lxc/4002/status/current",
+		map[string]any{"status": "running"})
+
+	p, _ := newProxmox(t, s)
+	got, err := p.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d machines", len(got))
+	}
+	if got[0].State != backend.StateRunning {
+		t.Errorf("State = %q, want the live state rather than the aggregate's", got[0].State)
+	}
+}
+
+// If the live check fails the aggregate is still better than nothing: a
+// listing that errors is worse than one that is briefly stale.
+func TestProxmoxListFallsBackToTheAggregate(t *testing.T) {
+	s := newPVEStub(t)
+	s.json("/api2/json/cluster/resources", []map[string]any{
+		{"vmid": 4002, "node": "pve1", "name": "cc-foo", "status": "running",
+			"type": "lxc", "tags": "ccvm", "template": 0},
+	})
+	s.fail("/api2/json/nodes/pve1/lxc/4002/status/current", http.StatusInternalServerError, "boom")
+
+	p, _ := newProxmox(t, s)
+	got, err := p.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 || got[0].State != backend.StateRunning {
+		t.Errorf("machines = %+v, want the aggregate used as a fallback", got)
+	}
 }

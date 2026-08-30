@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -188,9 +189,25 @@ func backendConfig() backend.Config {
 		ProxmoxSecret:   os.Getenv("CCVM_PROXMOX_SECRET"),
 		ProxmoxStorage:  os.Getenv("CCVM_PROXMOX_STORAGE"),
 		ProxmoxInsecure: os.Getenv("CCVM_PROXMOX_INSECURE") != "",
+		// The network settings are not optional in practice: a cluster whose
+		// bridge is not vmbr0, or whose free subnet is not the default, cannot
+		// be used at all without them.
+		ProxmoxBridge:   os.Getenv("CCVM_PROXMOX_BRIDGE"),
+		ProxmoxSubnet:   os.Getenv("CCVM_PROXMOX_SUBNET"),
+		ProxmoxGateway:  os.Getenv("CCVM_PROXMOX_GATEWAY"),
+		ProxmoxVMIDBase: envInt("CCVM_PROXMOX_VMID_BASE"),
+		ProxmoxSSHKey:   os.Getenv("CCVM_PROXMOX_SSH_KEY"),
 		KubeNamespace:   envOrDefault("CCVM_KUBE_NAMESPACE", "default"),
 		KubeContext:     os.Getenv("CCVM_KUBE_CONTEXT"),
 	}
+}
+
+func envInt(key string) int {
+	v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key)))
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 func envOrDefault(key, fallback string) string {
