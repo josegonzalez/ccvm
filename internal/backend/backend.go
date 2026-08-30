@@ -145,3 +145,15 @@ const (
 	StatePending = "pending"
 	StateUnknown = "unknown"
 )
+
+// EphemeralReporter is implemented by backends whose machines can be created in
+// a mode that deletes them the moment they stop.
+//
+// It exists because `ccvm keep` can move a TTL at runtime but cannot undo that
+// mode: docker's AutoRemove is fixed at creation. Without this, `ccvm keep`
+// would report success while docker still stood ready to delete the machine —
+// an exemption from the reaper is not an exemption from the daemon.
+type EphemeralReporter interface {
+	// AutoRemoves reports whether the machine will be deleted on stop.
+	AutoRemoves(ctx context.Context, h Handle) (bool, error)
+}

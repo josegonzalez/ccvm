@@ -45,6 +45,13 @@ build:
 	GOOS=linux GOARCH=amd64 $(GO) build -o $(DIST)/ccvm-init-linux-amd64 ./cmd/ccvm-init
 	GOOS=linux GOARCH=arm64 $(GO) build -o $(DIST)/ccvm-init-linux-arm64 ./cmd/ccvm-init
 
+# The image build needs the guest binaries staged into the context first: they
+# are compiled from this repo rather than fetched.
+IMAGE ?= ccvm/base:latest
+.PHONY: image
+image: build
+	docker build -f profiles/base/Dockerfile -t $(IMAGE) .
+
 .PHONY: clean
 clean:
 	rm -rf $(DIST) coverage.out

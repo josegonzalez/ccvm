@@ -341,3 +341,49 @@ func TestDockerDestroyForcesAndRemovesVolumes(t *testing.T) {
 		t.Errorf("call = %v, want --force and --volumes", f.Find("docker", "rm"))
 	}
 }
+
+// `ccvm keep` can move a TTL but cannot undo docker's AutoRemove, which is
+// fixed at creation. The backend has to be able to report that so the CLI can
+// avoid promising an exemption it cannot deliver.
+func TestDockerAutoRemoves(t *testing.T) {
+	tests := []struct {
+		out  string
+		want bool
+	}{
+		{"true\n", true},
+		{"false\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.out, func(t *testing.T) {
+			d, f := newDocker(t)
+			f.On("docker", "inspect").Stdout(tt.out)
+
+			got, err := d.AutoRemoves(context.Background(), backend.Handle{Name: "cc-foo"})
+			if err != nil {
+				t.Fatalf("AutoRemoves: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("AutoRemoves = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// A container created with --keep must not carry AutoRemove, or `ccvm keep`
+// is a promise the daemon will break.
+func TestDockerKeepAndAutoRemoveAreConsistent(t *testing.T) {
+	for _, keep := range []bool{true, false} {
+		d, f := newDocker(t)
+		f.On("docker", "run").Stdout("x\n")
+
+		s := baseSpec()
+		s.Keep = keep
+		if _, err := d.Create(context.Background(), s); err != nil {
+			t.Fatal(err)
+		}
+		hasRm := f.HasArg("--rm", "docker", "run")
+		if hasRm == keep {
+			t.Errorf("Keep=%v produced --rm=%v; they must be opposites", keep, hasRm)
+		}
+	}
+}

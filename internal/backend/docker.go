@@ -243,3 +243,16 @@ func sortedKeys(m map[string]string) []string {
 	sort.Strings(keys)
 	return keys
 }
+
+// AutoRemoves reports whether the daemon will delete this container when it
+// stops. The flag is fixed at creation, so a container made without --keep
+// cannot be fully protected by a later `ccvm keep`.
+func (d *Docker) AutoRemoves(ctx context.Context, h Handle) (bool, error) {
+	out, err := d.Runner.Run(ctx, d.bin(), "inspect", "--format", "{{.HostConfig.AutoRemove}}", h.Name)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(out)) == "true", nil
+}
+
+var _ EphemeralReporter = (*Docker)(nil)
