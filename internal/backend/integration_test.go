@@ -11,6 +11,7 @@ package backend_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -295,6 +296,13 @@ func TestReadSessionRecordFromStoppedMachine(t *testing.T) {
 		if controlPlaneOnly(name) {
 			t.Skip("guest boot needs a hypervisor")
 		}
+		// k8s is exempt: stopping a session deletes its pod, which takes the
+		// filesystem with it. That is why k8s leans on the cluster's own
+		// activeDeadlineSeconds and ttlSecondsAfterFinished rather than on a
+		// reaper reading a record back — see TestK8sJobCarriesNativeTTL.
+		if name == "k8s" {
+			t.Skip("a stopped k8s session has no filesystem to read; its TTL is the cluster's own")
+		}
 		stopper, ok := b.(interface {
 			Stop(context.Context, backend.Handle) error
 		})
@@ -464,8 +472,15 @@ func TestPreflightCreatesNothing(t *testing.T) {
 }
 
 // A missing image must fail with the backend's own message, not a hang.
+//
+// k8s is exempt by design: whether an image pulls is the cluster's business,
+// not the client's, so it surfaces a pull failure from the pod's events during
+// Wait instead. TestK8sUnpullableImageFailsFast covers that path.
 func TestPreflightRejectsMissingImage(t *testing.T) {
 	eachBackend(t, func(t *testing.T, name string, b backend.Backend) {
+		if name == "k8s" {
+			t.Skip("k8s reports pull failures from the pod's events in Wait, not from Preflight")
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 
@@ -544,4 +559,88 @@ func TestProxmoxControlPlane(t *testing.T) {
 			t.Errorf("err = %v, want it to name the missing template", err)
 		}
 	})
+}
+
+// --------------------------------------------------------------- k8s
+
+// The defining kubernetes failure: a Job applies successfully and its pod never
+// runs. This is the case a naive implementation hangs on forever, so it is
+// asserted against a real API server rather than only against a fake.
+func TestK8sUnpullableImageFailsFast(t *testing.T) {
+	if !itest.IsRequested("k8s") {
+		t.Skip("k8s not requested")
+	}
+	b, err := backend.New("k8s", run.New(testLogger{t}), configFromEnv())
+	if err != nil {
+		t.Fatalf("build k8s backend: %v", err)
+	}
+	itest.Gate(t, "k8s", probeFor("k8s", b))
+
+	ctx := testCtx(t)
+	spec := specFor(t, "k8s")
+	spec.Image = "ccvm-nonexistent.invalid/base:v0"
+
+	h, err := b.Create(ctx, spec)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Destroy(context.Background(), h) })
+
+	// Creating succeeds — that is the whole point. Readiness is where it fails.
+	start := time.Now()
+	err = b.Wait(ctx, h)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Wait reported a pod ready when its image cannot be pulled")
+	}
+	if elapsed > 3*time.Minute {
+		t.Errorf("Wait took %s; a pull failure must be reported, not waited out", elapsed)
+	}
+	// The reason has to come from the pod, or the message is useless.
+	if !strings.Contains(err.Error(), "ImagePull") && !strings.Contains(err.Error(), "ErrImagePull") {
+		t.Errorf("err = %v\n\nwant the pod's own pull failure reason", err)
+	}
+	t.Logf("failed in %s with: %v", elapsed.Round(time.Second), err)
+}
+
+// A finished Job must clean itself up through the cluster's own TTL, without
+// ccvm running a reaper.
+func TestK8sJobCarriesNativeTTL(t *testing.T) {
+	if !itest.IsRequested("k8s") {
+		t.Skip("k8s not requested")
+	}
+	b, err := backend.New("k8s", run.New(testLogger{t}), configFromEnv())
+	if err != nil {
+		t.Fatalf("build k8s backend: %v", err)
+	}
+	itest.Gate(t, "k8s", probeFor("k8s", b))
+
+	k, ok := b.(*backend.K8s)
+	if !ok {
+		t.Fatalf("expected *backend.K8s, got %T", b)
+	}
+	spec := specFor(t, "k8s")
+	spec.TTL = "1h"
+
+	manifest, err := k.ManifestForTest(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var job map[string]any
+	if err := json.Unmarshal(manifest, &job); err != nil {
+		t.Fatal(err)
+	}
+	jobSpec := job["spec"].(map[string]any)
+	if jobSpec["activeDeadlineSeconds"] != float64(3600) {
+		t.Errorf("activeDeadlineSeconds = %v, want the TTL expressed natively", jobSpec["activeDeadlineSeconds"])
+	}
+
+	// And the cluster must actually accept it.
+	ctx := testCtx(t)
+	h, err := b.Create(ctx, spec)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Destroy(context.Background(), h) })
 }

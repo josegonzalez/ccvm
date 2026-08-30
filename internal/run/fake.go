@@ -23,10 +23,12 @@ type Fake struct {
 // Rule is a scripted response for commands matching a prefix.
 type Rule struct {
 	prefix []string
-	stdout []byte
-	err    error
-	limit  int // 0 means unlimited
-	used   int
+	// subsequence matches args in order but not necessarily contiguously.
+	subsequence bool
+	stdout      []byte
+	err         error
+	limit       int // 0 means unlimited
+	used        int
 }
 
 func NewFake() *Fake { return &Fake{} }
@@ -37,6 +39,20 @@ func (f *Fake) On(prefix ...string) *Rule {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	r := &Rule{prefix: prefix}
+	f.rules = append(f.rules, r)
+	return r
+}
+
+// OnContaining scripts a response for commands whose argv contains all of args
+// in order, not necessarily contiguously.
+//
+// It exists for tools whose subcommand is preceded by global flags — kubectl
+// puts --namespace before the verb — where a prefix match would silently never
+// fire and leave the caller polling an unscripted command forever.
+func (f *Fake) OnContaining(args ...string) *Rule {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r := &Rule{prefix: args, subsequence: true}
 	f.rules = append(f.rules, r)
 	return r
 }
@@ -75,7 +91,7 @@ func (f *Fake) Run(ctx context.Context, argv ...string) ([]byte, error) {
 		if r.limit > 0 && r.used >= r.limit {
 			continue
 		}
-		if hasPrefix(argv, r.prefix) {
+		if r.matches(argv) {
 			r.used++
 			if r.err != nil {
 				if ce, ok := r.err.(*CmdError); ok {
@@ -112,20 +128,17 @@ func (f *Fake) Lines() []string {
 	return out
 }
 
-// Ran reports whether any recorded call started with prefix.
-func (f *Fake) Ran(prefix ...string) bool {
-	for _, c := range f.Calls() {
-		if hasPrefix(c, prefix) {
-			return true
-		}
-	}
-	return false
+// Ran reports whether any recorded call contains args in order. Matching a
+// subsequence rather than a prefix keeps assertions readable for tools that
+// put global flags before the verb.
+func (f *Fake) Ran(args ...string) bool {
+	return f.Find(args...) != nil
 }
 
-// Find returns the first recorded call starting with prefix, or nil.
-func (f *Fake) Find(prefix ...string) []string {
+// Find returns the first recorded call containing args in order, or nil.
+func (f *Fake) Find(args ...string) []string {
 	for _, c := range f.Calls() {
-		if hasPrefix(c, prefix) {
+		if hasSubsequence(c, args) {
 			return c
 		}
 	}
@@ -165,6 +178,24 @@ func (f *Fake) Reset() {
 }
 
 func (f *Fake) String() string { return strings.Join(f.Lines(), "\n") }
+
+func (r *Rule) matches(argv []string) bool {
+	if r.subsequence {
+		return hasSubsequence(argv, r.prefix)
+	}
+	return hasPrefix(argv, r.prefix)
+}
+
+// hasSubsequence reports whether want appears in argv in order.
+func hasSubsequence(argv, want []string) bool {
+	i := 0
+	for _, a := range argv {
+		if i < len(want) && a == want[i] {
+			i++
+		}
+	}
+	return i == len(want)
+}
 
 func hasPrefix(argv, prefix []string) bool {
 	if len(prefix) > len(argv) {

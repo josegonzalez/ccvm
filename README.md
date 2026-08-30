@@ -7,10 +7,23 @@ away when you are done. That makes `--dangerously-skip-permissions` a reasonable
 thing to hand it, because the blast radius is a machine you were about to
 delete.
 
-## Status
+## Backends
 
-The docker backend works end to end. orbstack, proxmox, and k8s are designed
-and their profiles ship, but their backends are not implemented yet.
+| | Spawn | Isolation | Survives Mac sleep | Reached by |
+| --- | --- | --- | --- | --- |
+| `docker` | ~1s | weakest: shared kernel, same host | no | forwarded loopback port |
+| `orbstack` | seconds, copy-on-write clone | a real Linux machine, `--isolated` | no | `<name>@orb`, built in |
+| `proxmox` | 1-3s LXC, longer for a VM | separate kernel or namespace | yes | a real address on your network |
+| `k8s` | seconds | pod, plus whatever the cluster enforces | yes | `kubectl port-forward` |
+
+All four are implemented. Proxmox needs `CCVM_PROXMOX_URL`, `CCVM_PROXMOX_TOKEN_ID`,
+and `CCVM_PROXMOX_SECRET`; k8s uses your current kubectl context. `ccvm doctor`
+reports which are ready.
+
+Two limitations worth knowing. Reaching a k8s session over ssh needs a
+`kubectl port-forward` you run yourself — ccvm does not yet supervise one, and
+it is a foreground process that dies on network blips. And proxmox guest boot
+is only exercised by hand; see Testing.
 
 ## Install
 
@@ -90,7 +103,19 @@ Integration skips are opt-in: name the backends in `CCVM_ITEST_BACKENDS` and the
 suite fails, rather than skips, if one is unavailable. A suite that silently
 skips reports green while testing nothing.
 
-CI covers docker and k8s. Proxmox gets its control plane exercised against a
-containerized PVE, which catches upstream API drift that frozen fixtures cannot.
-OrbStack has no automated coverage at all — it is macOS-only and GUI-installed —
-so a green badge does not cover it, or proxmox guest boot.
+The suite asserts the Backend contract rather than any one implementation, so a
+backend inherits all of it by registering. Where a backend genuinely cannot meet
+a claim, it is skipped with the reason: k8s reports pull failures from the pod's
+events rather than from preflight, and a stopped k8s session has no filesystem
+to read a TTL back from.
+
+CI covers docker and k8s, the latter on `kind`. Proxmox gets its control plane
+exercised against a containerized PVE pinned by digest, which catches upstream
+API drift that frozen fixtures cannot — they keep passing against a release that
+changed a response shape. That job is non-gating: it depends on someone else's
+repackaging of a distro, and a flaky required check is one you learn to ignore.
+
+Hosted runners have no nested virtualization, so **proxmox guest boot is never
+tested in CI**, and OrbStack has no automated coverage at all — it is macOS-only
+and GUI-installed. A green badge does not cover either. `make itest-local` is
+the only check, and it is a process dependency rather than a guarantee.
