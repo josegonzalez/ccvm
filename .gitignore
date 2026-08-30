@@ -6,3 +6,8 @@
 /ccvm
 /ccvm-done
 /ccvm-init
+
+# Shipped into every session machine and embedded into the binary. A global
+# ignore of CLAUDE.md would otherwise drop it from the repo, leaving the
+# //go:embed in guest/embed.go pointing at nothing.
+!guest/CLAUDE.md
