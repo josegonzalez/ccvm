@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"testing"
 
 	"github.com/rogpeppe/go-internal/testscript"
@@ -14,15 +13,13 @@ import (
 // asserting: they check a substring and miss the layout, the ordering, and the
 // stray blank line. These run the real binary and compare what a user sees.
 func TestMain(m *testing.M) {
-	os.Exit(testscript.RunMain(m, map[string]func() int{
-		"ccvm": func() int {
-			// The scripts drive a real ccvm, so a regression in argument
-			// handling or error formatting shows up here rather than in a
-			// mock's idea of it.
-			main()
-			return 0
-		},
-	}))
+	// Main rather than the deprecated RunMain: Go collects coverage from the
+	// subprocesses itself now, so the commands no longer return exit codes.
+	testscript.Main(m, map[string]func(){
+		// The scripts drive a real ccvm, so a regression in argument handling
+		// or error formatting shows up here rather than in a mock's idea of it.
+		"ccvm": main,
+	})
 }
 
 func TestScript(t *testing.T) {

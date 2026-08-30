@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/josegonzalez/ccvm/internal/session"
 )
@@ -248,5 +249,69 @@ func TestRunKeepIgnoresDirtyCheckout(t *testing.T) {
 
 	if err := c.run(true, false); err != nil {
 		t.Fatalf("run --keep on a dirty tree should not refuse: %v", err)
+	}
+}
+
+// A sentinel that cannot be written means the session would appear to end and
+// then quietly not, so the failure has to surface.
+func TestTouchSentinelReportsAnUnwritablePath(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "run")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := touchSentinel(filepath.Join(blocker, "ccvm", "destroy")); err == nil {
+		t.Fatal("expected an error when the sentinel directory cannot be created")
+	}
+}
+
+func TestWriteSessionReportsAnUnwritablePath(t *testing.T) {
+	if err := writeSession(filepath.Join(t.TempDir(), "nope", "session.toml"),
+		session.Session{Name: "cc-foo"}); err == nil {
+		t.Fatal("expected an error writing into a missing directory")
+	}
+}
+
+func TestReadSessionRejectsGarbage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.toml")
+	if err := os.WriteFile(path, []byte("not = = toml"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readSession(path); err == nil {
+		t.Fatal("expected a parse error")
+	}
+}
+
+// The whole point of the detached child is that this returns immediately, so
+// the calling tool call can report what happened before the terminal dies.
+func TestDetachTerminalReturnsImmediately(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		detachTerminal()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("detachTerminal blocked; the calling tool call would die mid-flight")
+	}
+}
+
+// Running outside a ccvm machine is the most likely mistake, and it should
+// exit non-zero with an explanation rather than appearing to work.
+func TestRealMainOutsideAMachine(t *testing.T) {
+	var out, errOut strings.Builder
+	if code := realMain(nil, &out, &errOut); code == 0 {
+		t.Error("exit code = 0 outside a ccvm machine")
+	}
+	if !strings.Contains(errOut.String(), "ccvm-done:") {
+		t.Errorf("stderr = %q, want the command named", errOut.String())
+	}
+}
+
+func TestRealMainRejectsUnknownFlags(t *testing.T) {
+	var out, errOut strings.Builder
+	if code := realMain([]string{"--frobnicate"}, &out, &errOut); code != 2 {
+		t.Errorf("exit code = %d, want 2 for a usage error", code)
 	}
 }

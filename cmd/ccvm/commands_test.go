@@ -685,3 +685,289 @@ func TestDoctorDistinguishesAbsentFromBroken(t *testing.T) {
 		t.Errorf("out = %q, want the raw exec error kept out of it", out.String())
 	}
 }
+
+// creds check reports both paths, because which one a session gets depends on
+// a flag and the failure modes differ.
+func TestCredsCheckReportsBothPaths(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, out, _ := newTestApp(t, f)
+
+	loginPath := filepath.Join(t.TempDir(), "credentials.json")
+	body := `{"claudeAiOauth":{"refreshToken":"r","refreshTokenExpiresAt":` +
+		strconv.FormatInt(time.Now().Add(720*time.Hour).UnixMilli(), 10) + `}}`
+	if err := os.WriteFile(loginPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CCVM_CREDENTIALS_FILE", loginPath)
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-x")
+
+	if err := cmdCreds(a, nil); err != nil {
+		t.Fatalf("cmdCreds: %v", err)
+	}
+	body2 := out.String()
+	if !strings.Contains(body2, "token      ready") {
+		t.Errorf("out = %q, want the token path reported", body2)
+	}
+	if !strings.Contains(body2, "login      ready") {
+		t.Errorf("out = %q, want the login path reported", body2)
+	}
+}
+
+// A login within three days of expiry stalls unattended sessions silently, so
+// it is warned about rather than merely reported.
+func TestCredsCheckWarnsOnImminentExpiry(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, errOut := newTestApp(t, f)
+
+	loginPath := filepath.Join(t.TempDir(), "credentials.json")
+	body := `{"claudeAiOauth":{"refreshToken":"r","refreshTokenExpiresAt":` +
+		strconv.FormatInt(time.Now().Add(36*time.Hour).UnixMilli(), 10) + `}}`
+	if err := os.WriteFile(loginPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CCVM_CREDENTIALS_FILE", loginPath)
+
+	if err := cmdCreds(a, nil); err != nil {
+		t.Fatalf("cmdCreds: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "expires in") {
+		t.Errorf("stderr = %q, want an expiry warning", errOut.String())
+	}
+}
+
+func TestCredsUnknownSubcommand(t *testing.T) {
+	a, _, _ := newTestApp(t, backendtest.NewFake("docker"))
+	if err := cmdCreds(a, []string{"frobnicate"}); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+func TestCredsImportRequiresAMachineName(t *testing.T) {
+	a, _, _ := newTestApp(t, backendtest.NewFake("docker"))
+	err := cmdCreds(a, []string{"import"})
+	if err == nil {
+		t.Fatal("expected a usage error")
+	}
+	if !strings.Contains(err.Error(), "no-credential") {
+		t.Errorf("err = %v, want it to explain what a broker is", err)
+	}
+}
+
+func TestProfilesUnknownSubcommand(t *testing.T) {
+	a, _, _ := newTestApp(t, backendtest.NewFake("docker"))
+	if err := cmdProfiles(a, []string{"frobnicate"}); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+func TestProfilesLintRequiresAName(t *testing.T) {
+	a, _, _ := newTestApp(t, backendtest.NewFake("docker"))
+	if err := cmdProfiles(a, []string{"lint"}); err == nil {
+		t.Fatal("expected a usage error")
+	}
+}
+
+// Destroying under rsync without returning changes is silent data loss, so it
+// is refused; --force is the deliberate override.
+func TestRmRefusesWhenChangesCannotBeReturned(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, errOut := newTestApp(t, f)
+
+	rec, err := session.Marshal(session.Session{
+		Name: "cc-demo", CodeMode: "rsync", Project: t.TempDir(), WorkDir: "/work", TTL: "12h",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Seed(backend.Machine{Name: "cc-demo", State: backend.StateRunning},
+		map[string][]byte{backend.SessionFile: rec})
+	// Nothing scripted for rsync, so the sync fails.
+	a.runner = run.NewFake()
+
+	if err := cmdRm(a, []string{"cc-demo"}); err == nil {
+		t.Fatal("expected a refusal")
+	}
+	if len(f.Destroyed) != 0 {
+		t.Error("destroyed a machine whose changes were never returned")
+	}
+	if !strings.Contains(errOut.String(), "--force") {
+		t.Errorf("stderr = %q, want the override named", errOut.String())
+	}
+}
+
+func TestRmForceDiscardsDeliberately(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+
+	rec, _ := session.Marshal(session.Session{
+		Name: "cc-demo", CodeMode: "rsync", Project: t.TempDir(), WorkDir: "/work",
+	})
+	f.Seed(backend.Machine{Name: "cc-demo", State: backend.StateRunning},
+		map[string][]byte{backend.SessionFile: rec})
+	a.runner = run.NewFake()
+
+	if err := cmdRm(a, []string{"--force", "cc-demo"}); err != nil {
+		t.Fatalf("cmdRm --force: %v", err)
+	}
+	if len(f.Destroyed) != 1 {
+		t.Error("--force did not destroy the machine")
+	}
+}
+
+// A mount-mode machine has nothing to return, so rm must not block on it.
+func TestRmDoesNotSyncNonRsyncModes(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	seedMachine(t, f, "cc-demo", session.Session{Name: "cc-demo", CodeMode: "mount"})
+	a.runner = run.NewFake()
+
+	if err := cmdRm(a, []string{"cc-demo"}); err != nil {
+		t.Fatalf("cmdRm: %v", err)
+	}
+	if len(f.Destroyed) != 1 {
+		t.Error("mount-mode machine was not destroyed")
+	}
+}
+
+// doctor reports every backend rather than stopping at the first failure, since
+// the useful answer is which ones work.
+func TestDoctorReportsEveryBackend(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, out, _ := newTestApp(t, f)
+
+	if err := cmdDoctor(a, nil); err != nil {
+		t.Fatalf("cmdDoctor: %v", err)
+	}
+	if !strings.Contains(out.String(), "docker") {
+		t.Errorf("out = %q", out.String())
+	}
+}
+
+func TestDoctorSingleBackend(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, out, _ := newTestApp(t, f)
+
+	if err := cmdDoctor(a, []string{"-backend", "docker"}); err != nil {
+		t.Fatalf("cmdDoctor: %v", err)
+	}
+	if !strings.Contains(out.String(), "ready") {
+		t.Errorf("out = %q", out.String())
+	}
+}
+
+func TestDoctorUnknownBackend(t *testing.T) {
+	a, _, _ := newTestApp(t, backendtest.NewFake("docker"))
+	if err := cmdDoctor(a, []string{"-backend", "frobnicate"}); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+// Every backend failing is worth a non-zero exit: nothing can be created.
+func TestDoctorFailsWhenNothingCanCreate(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	f.PreflightErr = errors.New("daemon down")
+	a, _, _ := newTestApp(t, f)
+
+	if err := cmdDoctor(a, nil); err == nil {
+		t.Fatal("expected an error when no backend is usable")
+	}
+}
+
+// The listing is the repair path when the ssh config and reality disagree.
+func TestProfilesListShowsBrokenProfiles(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, out, _ := newTestApp(t, f)
+
+	dir := filepath.Join(a.home, ".config", "ccvm", "profiles", "broken")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "profile.toml"),
+		[]byte("extends = \"nonexistent\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cmdProfiles(a, []string{"list"}); err != nil {
+		t.Fatalf("cmdProfiles: %v", err)
+	}
+	if !strings.Contains(out.String(), "broken") {
+		t.Errorf("out = %q, want the unresolvable profile listed rather than omitted", out.String())
+	}
+}
+
+// The reaper is only useful if something runs it, so install has to write the
+// agent and hand it to launchd.
+func TestGCInstallWritesAndLoadsTheAgent(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, out, _ := newTestApp(t, f)
+	runner := run.NewFake()
+	runner.On("launchctl", "list").Stdout("-\t0\tsh.ccvm.gc\n")
+	runner.On("launchctl").Stdout("")
+	a.runner = runner
+
+	if err := a.gcInstall(nil); err != nil {
+		t.Fatalf("gcInstall: %v", err)
+	}
+	plist := filepath.Join(a.home, "Library", "LaunchAgents", "sh.ccvm.gc.plist")
+	if _, err := os.Stat(plist); err != nil {
+		t.Fatalf("agent not written: %v", err)
+	}
+	// The cluster backends need their own schedules, and a Mac that is asleep
+	// reaps nothing, so install has to say so rather than implying it covers
+	// everything.
+	body := out.String()
+	for _, want := range []string{"reaper.yaml", "proxmox-reaper.cron"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("out = %q, want it to mention %q", body, want)
+		}
+	}
+}
+
+func TestGCInstallHonoursTheInterval(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, out, _ := newTestApp(t, f)
+	runner := run.NewFake()
+	runner.On("launchctl", "list").Stdout("-\t0\tsh.ccvm.gc\n")
+	runner.On("launchctl").Stdout("")
+	a.runner = runner
+
+	if err := a.gcInstall([]string{"-interval", "5m"}); err != nil {
+		t.Fatalf("gcInstall: %v", err)
+	}
+	if !strings.Contains(out.String(), "5m0s") {
+		t.Errorf("out = %q, want the chosen interval", out.String())
+	}
+}
+
+// A broker gets no credential, since it is the machine that produces one.
+func TestBuildBrokerProvisionsWithoutACredential(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+
+	if err := a.buildBroker("docker"); err != nil {
+		t.Fatalf("buildBroker: %v", err)
+	}
+	machines, err := f.List(a.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(machines) != 1 || machines[0].Name != BrokerName {
+		t.Fatalf("machines = %v, want a machine named %q", machines, BrokerName)
+	}
+	// Writing an env file would shadow the login about to be minted inside.
+	if _, ok := f.FileIn(BrokerName, creds.GuestEnvFile); ok {
+		t.Error("the broker was given a credential it exists to create")
+	}
+	// And it survives the session that built it.
+	rec, ok := f.FileIn(BrokerName, backend.SessionFile)
+	if !ok {
+		t.Fatal("no session record")
+	}
+	s, err := session.Unmarshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Kept() {
+		t.Errorf("TTL = %q, want the broker kept", s.TTL)
+	}
+}

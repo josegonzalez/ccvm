@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -191,17 +192,18 @@ const loadAttempts = 5
 func load(ctx context.Context, e run.Execer, path string) error {
 	var lastErr error
 	for range loadAttempts {
-		if _, err := e.Run(ctx, "launchctl", "bootstrap", guiDomain(), path); err == nil {
+		_, bootstrapErr := e.Run(ctx, "launchctl", "bootstrap", guiDomain(), path)
+		if bootstrapErr == nil {
 			return nil
-		} else {
-			lastErr = err
 		}
 		// The older spelling, for systems without bootstrap.
-		if _, err := e.Run(ctx, "launchctl", "load", "-w", path); err == nil {
+		_, loadErr := e.Run(ctx, "launchctl", "load", "-w", path)
+		if loadErr == nil {
 			return nil
-		} else {
-			lastErr = err
 		}
+		// Both spellings failed, and which one is informative depends on the
+		// system, so keep the pair rather than whichever ran last.
+		lastErr = errors.Join(bootstrapErr, loadErr)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

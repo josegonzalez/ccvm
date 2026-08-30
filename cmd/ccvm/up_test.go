@@ -27,7 +27,9 @@ func TestMachineName(t *testing.T) {
 			// The name is an ssh alias and a hostname, so it must stay inside
 			// that alphabet.
 			for _, r := range strings.TrimPrefix(got, "cc-") {
-				if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+				lower := r >= 'a' && r <= 'z'
+				digit := r >= '0' && r <= '9'
+				if !lower && !digit && r != '-' {
 					t.Errorf("name %q contains %q, which is not hostname-safe", got, r)
 				}
 			}

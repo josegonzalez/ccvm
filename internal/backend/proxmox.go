@@ -604,3 +604,13 @@ func (p *Proxmox) PickNodeForTest(ctx context.Context) (string, error) {
 	}
 	return p.API.pickNode(ctx)
 }
+
+// PVEErrorIsFatalForTest exposes the retryability classification, which is
+// otherwise reachable only through a failed request.
+func PVEErrorIsFatalForTest(err error) bool {
+	var pe *pveError
+	if asPVEError(err, &pe) {
+		return pe.Fatal()
+	}
+	return false
+}

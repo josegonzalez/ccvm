@@ -193,10 +193,14 @@ func push(ctx context.Context, r Runner, h backend.Handle, content, dst string) 
 	path := tmp.Name()
 	defer os.Remove(path)
 	if _, err := tmp.WriteString(content); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
-	tmp.Close()
+	// Closed before the file is read back, so a failure here means the content
+	// may be short and has to surface rather than be dropped.
+	if err := tmp.Close(); err != nil {
+		return err
+	}
 
 	if err := r.Push(ctx, h, path, dst); err != nil {
 		return err

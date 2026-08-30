@@ -322,3 +322,49 @@ func TestUninstallOnlyRemovesItsOwnAgent(t *testing.T) {
 		t.Error("uninstall removed an agent that was not ccvm's")
 	}
 }
+
+// A plist that cannot be written must fail rather than reporting a schedule
+// that does not exist.
+func TestInstallReportsAnUnwritableLocation(t *testing.T) {
+	home := t.TempDir()
+	blocker := filepath.Join(home, "Library")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := run.NewFake()
+	f.On("launchctl").Stdout("")
+
+	a := schedule.DefaultAgent("/usr/local/bin/ccvm", home)
+	if err := schedule.Install(context.Background(), f, a, home); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+// If launchd cannot be asked, saying so beats reporting "not scheduled" for
+// something that may well be running.
+func TestInstalledReportsAQueryFailure(t *testing.T) {
+	f := run.NewFake()
+	f.On("launchctl", "list").Fail(1, "Could not connect to the domain")
+
+	if _, err := schedule.Installed(context.Background(), f, schedule.Label); err == nil {
+		t.Fatal("expected an error when launchctl cannot be queried")
+	}
+}
+
+// Every attempt failing has to be reported, not retried into silence.
+func TestInstallFailsWhenEveryLoadAttemptFails(t *testing.T) {
+	home := t.TempDir()
+	f := run.NewFake()
+	f.On("launchctl", "bootout").Stdout("")
+	f.On("launchctl", "bootstrap").Fail(1, "denied")
+	f.On("launchctl", "load").Fail(1, "denied")
+
+	a := schedule.DefaultAgent("/usr/local/bin/ccvm", home)
+	err := schedule.Install(context.Background(), f, a, home)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "attempts") {
+		t.Errorf("err = %v, want it to say the retries were exhausted", err)
+	}
+}

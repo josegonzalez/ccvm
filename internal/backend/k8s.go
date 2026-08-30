@@ -178,10 +178,14 @@ func (k *K8s) Create(ctx context.Context, s Spec) (Handle, error) {
 	path := tmp.Name()
 	defer os.Remove(path)
 	if _, err := tmp.Write(manifest); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return Handle{}, err
 	}
-	tmp.Close()
+	// Closed before the file is read back, so a failure here means the content
+	// may be short and has to surface rather than be dropped.
+	if err := tmp.Close(); err != nil {
+		return Handle{}, err
+	}
 
 	if _, err := k.Runner.Run(ctx, k.kubectl("apply", "-f", path)...); err != nil {
 		return Handle{}, fmt.Errorf("create job %s: %w", s.Name, err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -333,5 +334,196 @@ func TestIsToolMissing(t *testing.T) {
 				t.Errorf("IsToolMissing = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestMachineHandleCarriesAddressing(t *testing.T) {
+	m := backend.Machine{Name: "cc-foo", Backend: "proxmox", ID: "4002", Node: "pve1"}
+	h := m.Handle()
+	if h.Name != "cc-foo" || h.Backend != "proxmox" || h.ID != "4002" || h.Node != "pve1" {
+		t.Errorf("Handle = %+v, want every addressing field carried", h)
+	}
+}
+
+// The reaper asks this of every machine, so it has to read the exact value
+// ccvm writes rather than anything looser.
+func TestMachineKept(t *testing.T) {
+	tests := map[string]bool{"keep": true, "12h": false, "": false}
+	for ttl, want := range tests {
+		if got := (backend.Machine{TTL: ttl}).Kept(); got != want {
+			t.Errorf("TTL %q: Kept() = %v, want %v", ttl, got, want)
+		}
+	}
+}
+
+// docker run already started the container, so Start is a no-op that exists to
+// keep the lifecycle reading the same across backends.
+func TestDockerStartIsANoop(t *testing.T) {
+	d, f := newDocker(t)
+	if err := d.Start(context.Background(), backend.Handle{Name: "cc-foo"}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if len(f.Calls()) != 0 {
+		t.Errorf("Start ran commands: %v", f.Lines())
+	}
+}
+
+// The ssh config entry is keyed on the machine name, so the target is the name.
+func TestDockerSSHTarget(t *testing.T) {
+	d, _ := newDocker(t)
+	if got := d.SSHTarget(backend.Handle{Name: "cc-foo"}); got != "cc-foo" {
+		t.Errorf("SSHTarget = %q", got)
+	}
+}
+
+func TestDockerExecAndPush(t *testing.T) {
+	d, f := newDocker(t)
+	f.On("docker", "exec").Stdout("alive\n")
+	f.On("docker", "cp").Stdout("")
+	h := backend.Handle{Name: "cc-foo"}
+
+	out, err := d.Exec(context.Background(), h, "echo", "alive")
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if strings.TrimSpace(string(out)) != "alive" {
+		t.Errorf("out = %q", out)
+	}
+	// docker exec takes an argv array, so the words stay separate.
+	if got := run.ShellQuote(f.Find("docker", "exec")); got != "docker exec cc-foo echo alive" {
+		t.Errorf("call = %q", got)
+	}
+
+	if err := d.Push(context.Background(), h, "/tmp/x", "/etc/x"); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if got := run.ShellQuote(f.Find("docker", "cp")); got != "docker cp /tmp/x cc-foo:/etc/x" {
+		t.Errorf("call = %q", got)
+	}
+}
+
+// Applying the Job schedules it, so there is nothing left for Start to do.
+func TestK8sStartIsANoop(t *testing.T) {
+	k, f := newK8s(t)
+	if err := k.Start(context.Background(), backend.Handle{Name: "cc-foo"}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if len(f.Calls()) != 0 {
+		t.Errorf("Start ran commands: %v", f.Lines())
+	}
+}
+
+// The target resolves through the ssh config entry pointing at the forwarded
+// port, so it is the machine name rather than the pod's.
+func TestK8sSSHTargetIsTheMachineName(t *testing.T) {
+	k, _ := newK8s(t)
+	if got := k.SSHTarget(backend.Handle{Name: "cc-foo"}); got != "cc-foo" {
+		t.Errorf("SSHTarget = %q", got)
+	}
+}
+
+// A port-forward has to address the pod directly, not the Job.
+func TestK8sPodNameResolvesThePod(t *testing.T) {
+	k, f := newK8s(t)
+	f.OnContaining("kubectl", "get", "pods").Stdout("cc-foo-abc12\n")
+
+	got, err := k.PodName(context.Background(), backend.Handle{Name: "cc-foo"})
+	if err != nil {
+		t.Fatalf("PodName: %v", err)
+	}
+	if got != "cc-foo-abc12" {
+		t.Errorf("PodName = %q", got)
+	}
+}
+
+func TestK8sPodNameFailsWhenNoPodExists(t *testing.T) {
+	k, f := newK8s(t)
+	f.OnContaining("kubectl", "get", "pods").Stdout("")
+	if _, err := k.PodName(context.Background(), backend.Handle{Name: "cc-foo"}); err == nil {
+		t.Fatal("expected an error with no pod")
+	}
+}
+
+// Auth and permission failures cannot be retried into success, and treating
+// them as transient only delays the real message.
+func TestProxmoxErrorFatalClassification(t *testing.T) {
+	s := newPVEStub(t)
+	tests := []struct {
+		code  int
+		fatal bool
+	}{
+		{http.StatusUnauthorized, true},
+		{http.StatusForbidden, true},
+		{http.StatusNotFound, true},
+		{http.StatusInternalServerError, false},
+		{http.StatusBadGateway, false},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprint(tt.code), func(t *testing.T) {
+			s.fail("/api2/json/nodes", tt.code, "x")
+			p, _ := newProxmox(t, s)
+			err := p.Preflight(context.Background(), pveSpec())
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			// Fatal is exercised through the error the client produced.
+			if got := backend.PVEErrorIsFatalForTest(err); got != tt.fatal {
+				t.Errorf("fatal = %v, want %v", got, tt.fatal)
+			}
+		})
+	}
+}
+
+// nextid is still queried by the integration suite as a control-plane probe.
+func TestProxmoxNextIDForTest(t *testing.T) {
+	s := newPVEStub(t)
+	s.json("/api2/json/cluster/nextid", "142")
+	p, _ := newProxmox(t, s)
+
+	got, err := p.NextIDForTest(context.Background())
+	if err != nil {
+		t.Fatalf("NextIDForTest: %v", err)
+	}
+	if got != 142 {
+		t.Errorf("nextid = %d", got)
+	}
+}
+
+func TestProxmoxNextIDRejectsGarbage(t *testing.T) {
+	s := newPVEStub(t)
+	s.json("/api2/json/cluster/nextid", "not-a-number")
+	p, _ := newProxmox(t, s)
+	if _, err := p.NextIDForTest(context.Background()); err == nil {
+		t.Fatal("expected an error for a non-numeric vmid")
+	}
+}
+
+func TestProxmoxPickNodeForTest(t *testing.T) {
+	s := newPVEStub(t)
+	s.json("/api2/json/nodes", []map[string]any{
+		{"node": "pve9", "status": "online", "maxmem": 100, "mem": 1},
+	})
+	cfg := s.config(false)
+	cfg.ProxmoxNode = ""
+	p := backend.NewProxmox(run.NewFake(), cfg)
+
+	got, err := p.PickNodeForTest(context.Background())
+	if err != nil {
+		t.Fatalf("PickNodeForTest: %v", err)
+	}
+	if got != "pve9" {
+		t.Errorf("node = %q", got)
+	}
+}
+
+// An unconfigured backend must refuse these rather than dereferencing a nil
+// client.
+func TestProxmoxTestHelpersRefuseWhenUnconfigured(t *testing.T) {
+	p := backend.NewProxmox(run.NewFake(), backend.Config{})
+	if _, err := p.NextIDForTest(context.Background()); err == nil {
+		t.Error("NextIDForTest succeeded with no configuration")
+	}
+	if _, err := p.PickNodeForTest(context.Background()); err == nil {
+		t.Error("PickNodeForTest succeeded with no configuration")
 	}
 }

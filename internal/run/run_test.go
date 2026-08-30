@@ -196,3 +196,110 @@ func TestFakeHonoursContextCancellation(t *testing.T) {
 		t.Errorf("err = %v, want context.Canceled", err)
 	}
 }
+
+// The Fake is used by every other package's tests, so its own behaviour is
+// worth pinning: a matcher that quietly stops matching would make those tests
+// pass while asserting nothing.
+func TestFakeOnContainingMatchesASubsequence(t *testing.T) {
+	f := run.NewFake()
+	f.OnContaining("kubectl", "get", "pods").Stdout("ok\n")
+
+	// The verb is preceded by global flags, which a prefix match would miss.
+	out, err := f.Run(context.Background(), "kubectl", "--namespace", "ccvm", "get", "pods", "-o", "json")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if strings.TrimSpace(string(out)) != "ok" {
+		t.Errorf("out = %q", out)
+	}
+}
+
+func TestFakeOnContainingRequiresOrder(t *testing.T) {
+	f := run.NewFake()
+	f.OnContaining("get", "pods").Stdout("ok\n")
+
+	if _, err := f.Run(context.Background(), "kubectl", "pods", "get"); err == nil {
+		t.Error("matched args in the wrong order")
+	}
+}
+
+func TestFakeErrorWithReportsAnArbitraryError(t *testing.T) {
+	f := run.NewFake()
+	sentinel := errors.New("binary not found")
+	f.On("kubectl").ErrorWith(sentinel)
+
+	_, err := f.Run(context.Background(), "kubectl", "get", "pods")
+	if !errors.Is(err, sentinel) {
+		t.Errorf("err = %v, want the supplied error", err)
+	}
+}
+
+func TestFakeTimesLimitsMatches(t *testing.T) {
+	f := run.NewFake()
+	f.On("x").Stdout("first\n").Times(2)
+	f.On("x").Stdout("later\n")
+
+	for i := range 2 {
+		out, err := f.Run(context.Background(), "x")
+		if err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+		if strings.TrimSpace(string(out)) != "first" {
+			t.Errorf("call %d = %q, want the limited rule", i, out)
+		}
+	}
+	out, _ := f.Run(context.Background(), "x")
+	if strings.TrimSpace(string(out)) != "later" {
+		t.Errorf("third call = %q, want the rule after the limit", out)
+	}
+}
+
+// Assertion failures print these, so an unreadable rendering costs debugging
+// time exactly when it is scarcest.
+func TestFakeLinesAndStringRenderShellQuoted(t *testing.T) {
+	f := run.NewFake()
+	f.On("echo").Stdout("")
+	if _, err := f.Run(context.Background(), "echo", "a b"); err != nil {
+		t.Fatal(err)
+	}
+
+	lines := f.Lines()
+	if len(lines) != 1 || lines[0] != "echo 'a b'" {
+		t.Errorf("Lines = %v", lines)
+	}
+	if !strings.Contains(f.String(), "echo 'a b'") {
+		t.Errorf("String = %q", f.String())
+	}
+}
+
+func TestFakeResetClearsCallsAndRules(t *testing.T) {
+	f := run.NewFake()
+	f.On("x").Stdout("")
+	if _, err := f.Run(context.Background(), "x"); err != nil {
+		t.Fatal(err)
+	}
+	f.Reset()
+
+	if len(f.Calls()) != 0 {
+		t.Errorf("Calls survived Reset: %v", f.Calls())
+	}
+	// Rules go too, so a reused fake does not silently answer stale scripts.
+	if _, err := f.Run(context.Background(), "x"); err == nil {
+		t.Error("a rule survived Reset")
+	}
+}
+
+func TestCmdErrorUnwrapsToTheUnderlyingError(t *testing.T) {
+	inner := errors.New("boom")
+	ce := &run.CmdError{Argv: []string{"x"}, Code: 1, Err: inner}
+	if !errors.Is(ce, inner) {
+		t.Error("CmdError does not unwrap to its cause")
+	}
+}
+
+func TestCmdErrorWithoutStderr(t *testing.T) {
+	ce := &run.CmdError{Argv: []string{"docker", "ps"}, Code: 2}
+	if got := ce.Error(); !strings.Contains(got, "exit 2") || strings.Contains(got, ": :") {
+		t.Errorf("Error = %q", got)
+	}
+}

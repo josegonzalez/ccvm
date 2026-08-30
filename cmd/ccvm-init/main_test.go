@@ -84,3 +84,32 @@ func TestInitReportsUnstartableService(t *testing.T) {
 		t.Error("exit code = 0 for a service that could not start")
 	}
 }
+
+func TestRealMainRejectsUnknownFlags(t *testing.T) {
+	if code := realMain([]string{"--frobnicate"}); code != 2 {
+		t.Errorf("exit code = %d, want 2 for a usage error", code)
+	}
+}
+
+// The supervised service is whatever follows the flags, so a caller can run
+// something other than sshd.
+func TestRealMainSupervisesTheGivenService(t *testing.T) {
+	sentinel := filepath.Join(t.TempDir(), "destroy")
+	done := make(chan int, 1)
+	go func() {
+		done <- realMain([]string{"-sentinel", sentinel, "-poll", "10ms", "sleep", "30"})
+	}()
+
+	time.Sleep(150 * time.Millisecond)
+	if err := os.WriteFile(sentinel, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Errorf("exit code = %d, want 0 for a sentinel shutdown", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("realMain did not shut down on the sentinel")
+	}
+}

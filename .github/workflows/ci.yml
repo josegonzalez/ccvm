@@ -15,7 +15,7 @@ permissions:
 env:
   # Coverage floor is a regression alarm, not a target. The pure packages sit
   # well above it unassisted.
-  COVERAGE_MIN: "75"
+  COVERAGE_MIN: "85"
 
 jobs:
   lint:

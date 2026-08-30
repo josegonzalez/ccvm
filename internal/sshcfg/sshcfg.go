@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -176,8 +177,13 @@ func (f File) Read() ([]Host, error) {
 				cur.HostName = val
 			}
 		case "port":
+			// A port that does not parse is dropped rather than silently
+			// becoming zero, which would send ssh to the default port and fail
+			// somewhere far from the malformed line.
 			if cur != nil {
-				fmt.Sscanf(val, "%d", &cur.Port)
+				if n, err := strconv.Atoi(val); err == nil {
+					cur.Port = n
+				}
 			}
 		case "user":
 			if cur != nil {

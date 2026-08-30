@@ -37,6 +37,10 @@ type Fake struct {
 	ListErr    error
 	DestroyErr error
 	PushErr    error
+	// PushErrAfter fails the Nth push onward (1 = the second push), for
+	// testing a failure partway through a sequence of them.
+	PushErrAfter int
+	pushes       int
 	// ExecErrOn makes any Exec whose argv contains this string fail, for
 	// testing what happens partway through a sequence.
 	ExecErrOn string
@@ -148,8 +152,12 @@ func (f *Fake) Exec(ctx context.Context, h backend.Handle, argv ...string) ([]by
 func (f *Fake) Push(ctx context.Context, h backend.Handle, src, dst string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.pushes++
 	if f.PushErr != nil {
 		return f.PushErr
+	}
+	if f.PushErrAfter > 0 && f.pushes > f.PushErrAfter {
+		return fmt.Errorf("push %d: scripted failure", f.pushes)
 	}
 	data, err := readFile(src)
 	if err != nil {

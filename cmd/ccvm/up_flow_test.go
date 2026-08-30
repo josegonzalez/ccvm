@@ -13,6 +13,8 @@ import (
 	"github.com/josegonzalez/ccvm/internal/backend"
 	"github.com/josegonzalez/ccvm/internal/backendtest"
 	"github.com/josegonzalez/ccvm/internal/creds"
+	"github.com/josegonzalez/ccvm/internal/profile"
+	"github.com/josegonzalez/ccvm/internal/run"
 	"github.com/josegonzalez/ccvm/internal/session"
 	"github.com/josegonzalez/ccvm/internal/sshcfg"
 )
@@ -980,5 +982,276 @@ func TestKubeDefaults(t *testing.T) {
 	t.Setenv("CCVM_KUBE_NAMESPACE", "ccvm")
 	if got := a.kubeNamespace(); got != "ccvm" {
 		t.Errorf("kubeNamespace = %q", got)
+	}
+}
+
+// The ssh target is not always the machine name: orbstack answers to
+// user@name@orb and proxmox to an address, so resolution goes through the
+// listing rather than assuming.
+func TestTargetForUsesTheBackendsTarget(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	f.Seed(backend.Machine{Name: "cc-demo", State: backend.StateRunning, SSH: "root@cc-demo@orb"}, nil)
+
+	got, err := a.targetFor("cc-demo")
+	if err != nil {
+		t.Fatalf("targetFor: %v", err)
+	}
+	if got != "root@cc-demo@orb" {
+		t.Errorf("target = %q, want the backend's own", got)
+	}
+}
+
+func TestTargetForFallsBackToTheName(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	f.Seed(backend.Machine{Name: "cc-demo", State: backend.StateRunning}, nil)
+
+	got, err := a.targetFor("cc-demo")
+	if err != nil {
+		t.Fatalf("targetFor: %v", err)
+	}
+	if got != "cc-demo" {
+		t.Errorf("target = %q", got)
+	}
+}
+
+func TestTargetForUnknownMachine(t *testing.T) {
+	a, _, _ := newTestApp(t, backendtest.NewFake("docker"))
+	if _, err := a.targetFor("cc-ghost"); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+// `ccvm ssh` opens a plain shell, not a Claude session.
+func TestCmdSSHOpensAShell(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	f.Seed(backend.Machine{Name: "cc-demo", State: backend.StateRunning}, nil)
+
+	var got []string
+	restore := attach.SetRunnerForTest(func(argv []string) error {
+		got = argv
+		return nil
+	})
+	defer restore()
+
+	if err := cmdSSH(a, []string{"cc-demo", "--", "ls", "/work"}); err != nil {
+		t.Fatalf("cmdSSH: %v", err)
+	}
+	joined := strings.Join(got, " ")
+	if !strings.HasSuffix(joined, "cc-demo ls /work") {
+		t.Errorf("command = %q", joined)
+	}
+	if strings.Contains(joined, "tmux") || strings.Contains(joined, "claude") {
+		t.Errorf("ccvm ssh started a session: %q", joined)
+	}
+}
+
+func TestCmdSSHRequiresAName(t *testing.T) {
+	a, _, _ := newTestApp(t, backendtest.NewFake("docker"))
+	if err := cmdSSH(a, nil); err == nil {
+		t.Fatal("expected a usage error")
+	}
+}
+
+// `ccvm attach` returns to the existing tmux session rather than starting a
+// second one.
+func TestCmdAttachReconnectsToTheSession(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	f.Seed(backend.Machine{Name: "cc-demo", State: backend.StateRunning}, nil)
+
+	var got []string
+	restore := attach.SetRunnerForTest(func(argv []string) error {
+		got = argv
+		return nil
+	})
+	defer restore()
+
+	if err := cmdAttach(a, []string{"cc-demo"}); err != nil {
+		t.Fatalf("cmdAttach: %v", err)
+	}
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, "tmux new -A -s cc") {
+		t.Errorf("command = %q, want it to attach rather than duplicate", joined)
+	}
+}
+
+func TestCmdAttachRequiresExactlyOneName(t *testing.T) {
+	a, _, _ := newTestApp(t, backendtest.NewFake("docker"))
+	for _, args := range [][]string{nil, {"a", "b"}} {
+		if err := cmdAttach(a, args); err == nil {
+			t.Errorf("args %v: expected a usage error", args)
+		}
+	}
+}
+
+func TestKubeContextFromEnvironment(t *testing.T) {
+	a, _, _ := newTestApp(t, backendtest.NewFake("docker"))
+	t.Setenv("CCVM_KUBE_CONTEXT", "kind-ccvm")
+	if got := a.kubeContext(); got != "kind-ccvm" {
+		t.Errorf("kubeContext = %q", got)
+	}
+}
+
+// The word "image" means something different per backend: a registry reference
+// for docker and k8s, a template machine for orbstack, a template vmid for
+// proxmox. Resolving it in one place is what keeps up and doctor agreeing.
+func TestImageForBackend(t *testing.T) {
+	cfg := &profile.Config{Backend: map[string]profile.Backend{
+		"docker":   {Image: "ccvm/go:latest"},
+		"k8s":      {Image: "reg/ccvm-go:1"},
+		"orbstack": {Template: "ccvm-go"},
+		"proxmox":  {LXCTemplate: 9002, VMTemplate: 9102},
+	}}
+	tests := []struct {
+		backend string
+		vm      bool
+		want    string
+	}{
+		{"docker", false, "ccvm/go:latest"},
+		{"k8s", false, "reg/ccvm-go:1"},
+		{"orbstack", false, "ccvm-go"},
+		{"proxmox", false, "9002"},
+		{"proxmox", true, "9102"},
+	}
+	for _, tt := range tests {
+		got, err := imageForBackend(cfg, tt.backend, tt.vm)
+		if err != nil {
+			t.Errorf("%s(vm=%v): %v", tt.backend, tt.vm, err)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("%s(vm=%v) = %q, want %q", tt.backend, tt.vm, got, tt.want)
+		}
+	}
+}
+
+// A profile missing a backend must say which, and how to fix it, rather than
+// failing later at create time.
+func TestImageForBackendNamesWhatIsMissing(t *testing.T) {
+	cfg := &profile.Config{Backend: map[string]profile.Backend{
+		"docker":  {Image: "x"},
+		"proxmox": {LXCTemplate: 9002},
+	}}
+	for _, backendName := range []string{"k8s", "orbstack"} {
+		_, err := imageForBackend(cfg, backendName, false)
+		if err == nil {
+			t.Errorf("%s: expected an error", backendName)
+			continue
+		}
+		if !strings.Contains(err.Error(), backendName) {
+			t.Errorf("%s: err = %v, want it to name the backend", backendName, err)
+		}
+	}
+	// Asking for a VM from a profile with no VM template is its own failure.
+	if _, err := imageForBackend(cfg, "proxmox", true); err == nil {
+		t.Error("expected an error for a missing vm_template")
+	}
+}
+
+// Every failure a user is likely to hit should offer a next action.
+func TestFixForOffersANextAction(t *testing.T) {
+	tests := []struct {
+		backend string
+		err     error
+		want    string
+	}{
+		{"docker", errBoomMsg("docker daemon is not reachable"), "orbstack"},
+		{"orbstack", errBoomMsg("OrbStack is not reachable"), "orbstack"},
+		{"docker", errBoomMsg(`image "x" is not present locally`), "profiles build"},
+		{"docker", errBoomMsg("something unforeseen"), ""},
+	}
+	for _, tt := range tests {
+		got := fixFor(tt.backend, tt.err)
+		if tt.want == "" {
+			if got != "" {
+				t.Errorf("%v: fix = %q, want none for an unrecognized failure", tt.err, got)
+			}
+			continue
+		}
+		if !strings.Contains(got, tt.want) {
+			t.Errorf("%v: fix = %q, want it to mention %q", tt.err, got, tt.want)
+		}
+	}
+}
+
+type errBoomMsg string
+
+func (e errBoomMsg) Error() string { return string(e) }
+
+// A machine that cannot take the credential is unusable, so the failure has to
+// unwind rather than leave it running unauthenticated.
+func TestUpRollsBackWhenCredentialInstallFails(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	// The key install pushes first and succeeds; the credential push is next.
+	f.PushErrAfter = 1
+
+	err := cmdUp(a, []string{"-detach", dir})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if len(f.Destroyed) != 1 {
+		t.Errorf("Destroyed = %v, want the unusable machine cleaned up", f.Destroyed)
+	}
+}
+
+// kubernetes is the only backend needing a forward; the resolution has to find
+// the pod before one can be established.
+func TestHoldForwardResolvesTheKubernetesPod(t *testing.T) {
+	runner := run.NewFake()
+	runner.OnContaining("kubectl", "get", "jobs").Stdout(`{"items":[
+	  {"metadata":{"name":"cc-demo","labels":{},"annotations":{}},"status":{"active":1}}]}`)
+	runner.OnContaining("kubectl", "get", "pods").Stdout("")
+
+	k := backend.NewK8s(runner, backend.Config{KubeNamespace: "default"})
+	a, _, _ := newTestApp(t, backendtest.NewFake("docker"))
+	a.backends = map[string]backend.Backend{"k8s": k}
+	a.runner = runner
+
+	// No pod resolves, so the forward cannot be established and says so rather
+	// than silently forwarding to nothing.
+	if _, err := a.holdForward("cc-demo"); err == nil {
+		t.Fatal("expected an error with no pod")
+	}
+}
+
+// The login path copies a credentials file in and tightens it, which the token
+// path does not do at all.
+func TestUpLoginPathInstallsAndTightensTheCredential(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+	withLogin(t)
+
+	if err := cmdUp(a, []string{"-detach", "-remote-control", dir}); err != nil {
+		t.Fatalf("cmdUp: %v", err)
+	}
+	if _, ok := f.FileIn("cc-demo", creds.GuestCredentialsFile); !ok {
+		t.Fatal("the login was not copied into the guest")
+	}
+	if !f.Ran("chmod", "600", creds.GuestCredentialsFile) {
+		t.Errorf("credential left readable\ncalls: %v", f.ExecCalls())
+	}
+	if !f.Ran("chown", "-R", "root:root", "/root/.claude") {
+		t.Errorf("credential left owned by the host uid\ncalls: %v", f.ExecCalls())
+	}
+
+	// And the session record says which credential it holds, since that cannot
+	// be inferred afterwards.
+	data, ok := f.FileIn("cc-demo", backend.SessionFile)
+	if !ok {
+		t.Fatal("no session record")
+	}
+	rec, err := session.Unmarshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rec.HoldsLogin() {
+		t.Errorf("AuthMode = %q, want the login recorded", rec.AuthMode)
 	}
 }

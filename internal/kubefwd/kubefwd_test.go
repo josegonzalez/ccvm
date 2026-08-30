@@ -121,26 +121,22 @@ func TestForwardIsRestartedWhenItDies(t *testing.T) {
 	}
 	defer f.Stop()
 
-	// Wait on the observable, not the counter: the drop is recorded before the
-	// backoff, so a wait on Drops would race the respawn it is meant to prove.
+	// Wait on Restarts, which is incremented only after a respawn succeeds.
+	// Waiting on the launch count instead would race that increment, and
+	// waiting on Drops would race the respawn itself, since a drop is recorded
+	// before the backoff.
 	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		mu.Lock()
-		n := launches
-		mu.Unlock()
-		if n >= 2 {
-			break
-		}
+	for time.Now().Before(deadline) && f.Restarts() == 0 {
 		time.Sleep(50 * time.Millisecond)
+	}
+	if f.Restarts() == 0 {
+		t.Fatal("a forward that exited was never re-established")
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
 	if launches < 2 {
 		t.Errorf("launches = %d, want the forward re-established", launches)
-	}
-	if f.Restarts() == 0 {
-		t.Error("a successful re-establishment was not counted")
 	}
 }
 
@@ -293,4 +289,41 @@ func startCmd(t *testing.T, ctx context.Context, name string, args ...string) (*
 		return nil, err
 	}
 	return cmd, nil
+}
+
+// Drops and Restarts differ when a pod is gone for good, which is the
+// difference between a connection that is flaky and one that is over.
+func TestDropsCountsDeathsSeparatelyFromRestarts(t *testing.T) {
+	port, closeL := listener(t)
+	defer closeL()
+
+	f := kubefwd.New("ccvm", "", "cc-demo", port)
+	f.Launch = func(ctx context.Context, argv []string) (*exec.Cmd, error) {
+		return startCmd(t, ctx, "true") // exits immediately, every time
+	}
+	if err := f.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer f.Stop()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && f.Drops() == 0 {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if f.Drops() == 0 {
+		t.Fatal("a forward that kept exiting recorded no drops")
+	}
+}
+
+func TestDefaultsAreFilledIn(t *testing.T) {
+	f := kubefwd.New("ccvm", "", "cc-demo", 2231)
+	if f.Bin != "kubectl" {
+		t.Errorf("Bin = %q", f.Bin)
+	}
+	if f.RemotePort != 22 {
+		t.Errorf("RemotePort = %d, want ssh", f.RemotePort)
+	}
+	if f.ReadyTimeout <= 0 {
+		t.Error("ReadyTimeout is not set, so Start would wait forever")
+	}
 }

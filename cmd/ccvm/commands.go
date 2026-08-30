@@ -160,7 +160,8 @@ func (a *app) readSession(m backend.Machine) (session.Session, error) {
 		return session.Session{}, err
 	}
 	path := tmp.Name()
-	tmp.Close()
+	// Nothing was written, so there is no short-write to report.
+	_ = tmp.Close()
 	defer os.Remove(path)
 
 	if err := b.Pull(a.ctx, m.Handle(), backend.SessionFile, path); err != nil {
@@ -183,7 +184,7 @@ func cmdRm(a *app, args []string) error {
 	}
 	args = fs.Args()
 	if len(args) == 0 {
-		return fmt.Errorf("usage: ccvm rm [--force] <name>...")
+		return fmt.Errorf("usage: ccvm rm [--force] <name> [name ...]")
 	}
 	machines, err := a.listAll(true)
 	if err != nil {
@@ -336,10 +337,13 @@ func (a *app) writeSession(m backend.Machine, s session.Session) error {
 	path := tmp.Name()
 	defer os.Remove(path)
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
-	tmp.Close()
+	// Closed before the file is read back, so a short write has to surface.
+	if err := tmp.Close(); err != nil {
+		return err
+	}
 	return b.Push(a.ctx, m.Handle(), path, backend.SessionFile)
 }
 
@@ -885,7 +889,7 @@ func (a *app) credsImport(machine string) error {
 	// later, at the point where a session cannot authenticate.
 	expiry, err := creds.ExpiresAt(dst)
 	if err != nil {
-		os.Remove(dst)
+		_ = os.Remove(dst)
 		return fmt.Errorf("what came out of %s is not a usable login: %w", machine, err)
 	}
 

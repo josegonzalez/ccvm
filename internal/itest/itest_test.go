@@ -138,3 +138,27 @@ func (r *recorder) Skipf(string, ...any) {
 }
 
 type gateStop struct{}
+
+// `go test ./...` without the env var should stay quiet rather than reporting
+// a wall of skips.
+func TestSkipUnlessAnyRequested(t *testing.T) {
+	t.Setenv(itest.EnvBackends, "")
+	rec := &recorder{}
+	func() {
+		defer func() { _ = recover() }()
+		itest.SkipUnlessAnyRequested(rec)
+	}()
+	if !rec.skipped {
+		t.Error("did not skip with nothing requested")
+	}
+
+	t.Setenv(itest.EnvBackends, "docker")
+	rec2 := &recorder{}
+	func() {
+		defer func() { _ = recover() }()
+		itest.SkipUnlessAnyRequested(rec2)
+	}()
+	if rec2.skipped {
+		t.Error("skipped even though a backend was requested")
+	}
+}

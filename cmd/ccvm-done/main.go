@@ -35,22 +35,31 @@ const (
 )
 
 func main() {
-	var (
-		keep  = flag.Bool("keep", false, "leave the machine running and just detach")
-		force = flag.Bool("force", false, "destroy even if uncommitted work would be lost")
-	)
-	flag.Parse()
+	os.Exit(realMain(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// realMain is split from main so the flag handling and exit codes are testable;
+// main itself is then too thin to hold a mistake.
+func realMain(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("ccvm-done", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	keep := fs.Bool("keep", false, "leave the machine running and just detach")
+	force := fs.Bool("force", false, "destroy even if uncommitted work would be lost")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
 
 	cmd := &doneCmd{
 		sessionPath:  sessionFile,
 		sentinelPath: doneSentinel,
 		detach:       detachTerminal,
-		out:          os.Stdout,
+		out:          stdout,
 	}
 	if err := cmd.run(*keep, *force); err != nil {
-		fmt.Fprintln(os.Stderr, "ccvm-done:", err)
-		os.Exit(1)
+		fmt.Fprintln(stderr, "ccvm-done:", err)
+		return 1
 	}
+	return 0
 }
 
 // doneCmd holds what run touches, so the paths and the terminal kill can be

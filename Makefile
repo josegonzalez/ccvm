@@ -19,6 +19,24 @@ lint:
 	@test -z "$$(gofmt -l . | tee /dev/stderr)" || (echo "gofmt: files need formatting" && false)
 	$(GO) vet $(PKG)
 	$(GO) vet -tags=integration $(PKG)
+	@$(MAKE) --no-print-directory golangci
+
+# golangci-lint refuses to load a config whose target Go version is newer than
+# the one it was built with, so a distro build lags go.mod and fails. Prefer the
+# one installed by `make tools`, which is built with this project's toolchain.
+GOLANGCI := $(shell $(GO) env GOPATH)/bin/golangci-lint
+
+.PHONY: golangci
+golangci:
+	@if [ -x "$(GOLANGCI)" ]; then \
+		"$(GOLANGCI)" run $(PKG); \
+	else \
+		echo "golangci-lint not installed; run 'make tools' (CI runs it regardless)"; \
+	fi
+
+.PHONY: tools
+tools:
+	$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 
 # Applies modernizations rather than only reporting them, which is what makes
 # the CI check meaningful: it fails on any diff go fix would produce.

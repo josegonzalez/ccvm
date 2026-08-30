@@ -30,20 +30,27 @@ const (
 )
 
 func main() {
-	var (
-		sentinel = flag.String("sentinel", doneSentinel, "path whose appearance ends the machine")
-		poll     = flag.Duration("poll", pollInterval, "how often to check for the sentinel")
-	)
-	flag.Parse()
+	os.Exit(realMain(os.Args[1:]))
+}
+
+// realMain is split from main so the flag handling is testable; main itself is
+// then too thin to hold a mistake.
+func realMain(args []string) int {
+	fs := flag.NewFlagSet("ccvm-init", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	sentinel := fs.String("sentinel", doneSentinel, "path whose appearance ends the machine")
+	poll := fs.Duration("poll", pollInterval, "how often to check for the sentinel")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
 
 	// argv after the flags is the service to supervise, defaulting to sshd in
 	// the foreground.
-	service := flag.Args()
+	service := fs.Args()
 	if len(service) == 0 {
 		service = []string{"/usr/sbin/sshd", "-D", "-e"}
 	}
-
-	os.Exit(runInit(*sentinel, *poll, service))
+	return runInit(*sentinel, *poll, service)
 }
 
 func runInit(sentinel string, poll time.Duration, service []string) int {

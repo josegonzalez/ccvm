@@ -191,7 +191,7 @@ func (f *Forwarder) waitReady(ctx context.Context) error {
 		}
 		conn, err := net.DialTimeout("tcp", addr, time.Second)
 		if err == nil {
-			conn.Close()
+			_ = conn.Close()
 			return nil
 		}
 		select {
@@ -214,7 +214,7 @@ func (f *Forwarder) Healthy() bool {
 	if err != nil {
 		return false
 	}
-	conn.Close()
+	_ = conn.Close()
 	return true
 }
 

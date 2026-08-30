@@ -168,10 +168,14 @@ func (a *app) pushGuestGuide(template string) error {
 	path := tmp.Name()
 	defer os.Remove(path)
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
-	tmp.Close()
+	// Closed before the file is read back, so a failure here means the content
+	// may be short and has to surface rather than be dropped.
+	if err := tmp.Close(); err != nil {
+		return err
+	}
 
 	if _, err := a.runner.Run(a.ctx, "orbctl", "run", "-m", template, "-u", "root",
 		"mkdir", "-p", "/root/.claude"); err != nil {
@@ -195,7 +199,7 @@ func (a *app) stageProfile(name string) (dir string, cleanup func(), err error) 
 	if err != nil {
 		return "", nil, err
 	}
-	cleanup = func() { os.RemoveAll(tmp) }
+	cleanup = func() { _ = os.RemoveAll(tmp) }
 
 	entries, err := profiles.FS().(interface {
 		ReadDir(string) ([]os.DirEntry, error)

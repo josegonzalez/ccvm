@@ -1,0 +1,39 @@
+version: "2"
+
+linters:
+  # The default set, plus the ones that catch the mistakes this codebase has
+  # actually made: shadowed errors, unchecked returns, and dead assignments.
+  default: standard
+
+  settings:
+    errcheck:
+      # Writes to a buffer or to the process's own output. A failure here means
+      # the terminal went away, which is not something a command can react to,
+      # and checking every one would bury the returns that do matter.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Sscanf
+
+    staticcheck:
+      checks:
+        - all
+
+  exclusions:
+    rules:
+      # A deferred Close on a file being read, or on a listener a test owns,
+      # has no failure worth acting on: the read already succeeded, and there
+      # is no caller left to tell. Writes are excluded from this by naming the
+      # receivers rather than Close generally.
+      - linters: [errcheck]
+        source: '^\s*defer .*\.(Close|Stop)\(\)$'
+
+      # Cleanup in a defer or a test helper. The operation is best-effort by
+      # construction: the machine is going away, or the test is over.
+      - linters: [errcheck]
+        source: '^\s*defer (os\.Remove|os\.RemoveAll|f\.Stop|fwd\.Stop)'
+        
+      - linters: [errcheck]
+        path: _test\.go
+        source: '(os\.RemoveAll|\.Close|\.Stop)\('

@@ -435,7 +435,8 @@ func (a *app) readSessionFrom(b backend.Backend, h backend.Handle) (session.Sess
 		return session.Session{}, err
 	}
 	path := tmp.Name()
-	tmp.Close()
+	// Nothing was written, so there is no short-write to report.
+	_ = tmp.Close()
 	defer os.Remove(path)
 
 	if err := b.Pull(a.ctx, h, backend.SessionFile, path); err != nil {
@@ -514,10 +515,13 @@ func (a *app) installSSHKey(b backend.Backend, h backend.Handle) error {
 	path := tmp.Name()
 	defer os.Remove(path)
 	if _, err := tmp.WriteString(line); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
-	tmp.Close()
+	// Closed before the file is read back, so a short write has to surface.
+	if err := tmp.Close(); err != nil {
+		return err
+	}
 
 	const dir = "/root/.ssh"
 	if _, err := b.Exec(a.ctx, h, "mkdir", "-p", dir); err != nil {
@@ -628,10 +632,13 @@ func (a *app) pushString(b backend.Backend, h backend.Handle, content, dst, mode
 	path := tmp.Name()
 	defer os.Remove(path)
 	if _, err := tmp.WriteString(content); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
-	tmp.Close()
+	// Closed before the file is read back, so a short write has to surface.
+	if err := tmp.Close(); err != nil {
+		return err
+	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		return err
 	}
@@ -707,10 +714,13 @@ func (a *app) writeSessionRecord(b backend.Backend, h backend.Handle, spec backe
 	path := tmp.Name()
 	defer os.Remove(path)
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
-	tmp.Close()
+	// Closed before the file is read back, so a short write has to surface.
+	if err := tmp.Close(); err != nil {
+		return err
+	}
 
 	if _, err := b.Exec(a.ctx, h, "mkdir", "-p", filepath.Dir(backend.SessionFile)); err != nil {
 		return err

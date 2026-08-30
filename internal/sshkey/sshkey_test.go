@@ -153,3 +153,59 @@ func TestDefaultPathsAreDedicated(t *testing.T) {
 		t.Errorf("Public = %q", p.Public)
 	}
 }
+
+// A key that cannot be written must be reported: the alternative is a machine
+// created and then unreachable.
+func TestEnsureReportsAnUnwritableLocation(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, ".ssh")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := sshkey.Default(dir)
+	if _, err := p.Ensure(); err == nil {
+		t.Fatal("expected an error when the ssh directory cannot be created")
+	}
+}
+
+// Ensure tightens an existing key's mode rather than trusting whatever it
+// finds, since ssh refuses a loose one.
+func TestEnsureRewritesModeOnItsOwnFiles(t *testing.T) {
+	p := sshkey.Default(t.TempDir())
+	if _, err := p.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(p.Public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o644 {
+		t.Errorf("public key mode = %04o, want 0644", st.Mode().Perm())
+	}
+}
+
+// The public half is what goes into every guest, so a corrupt one has to be
+// caught here rather than after a machine is already unreachable.
+func TestAuthorizedKeyRejectsATruncatedKey(t *testing.T) {
+	p := sshkey.Default(t.TempDir())
+	if _, err := p.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(p.Public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.Public, data[:len(data)/2], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.AuthorizedKey(); err == nil {
+		t.Fatal("expected an error for a truncated public key")
+	}
+}
+
+func TestAuthorizedKeyMissingFile(t *testing.T) {
+	p := sshkey.Default(t.TempDir())
+	if _, err := p.AuthorizedKey(); err == nil {
+		t.Fatal("expected an error with no public key on disk")
+	}
+}
