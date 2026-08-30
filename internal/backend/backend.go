@@ -4,6 +4,7 @@ package backend
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -156,4 +157,31 @@ const (
 type EphemeralReporter interface {
 	// AutoRemoves reports whether the machine will be deleted on stop.
 	AutoRemoves(ctx context.Context, h Handle) (bool, error)
+}
+
+// Stopper is implemented by backends that can halt a machine without destroying
+// it. The reaper needs this to exist for `ccvm keep` to mean anything: a
+// machine that cannot be stopped and resumed is not durable.
+type Stopper interface {
+	Stop(ctx context.Context, h Handle) error
+}
+
+// NamePrefix marks a session machine. Backends with no label or metadata field
+// — orbstack — rely on it entirely, so it must not be changed casually.
+const NamePrefix = "cc-"
+
+// TemplatePrefix marks the images sessions are cloned from. Templates live
+// alongside sessions on backends like orbstack, and listing one as a session
+// would offer the user a machine whose destruction breaks every future spawn.
+const TemplatePrefix = "ccvm-"
+
+// IsSessionName reports whether a machine name is one ccvm created for a
+// session, as opposed to a template or a machine the user owns.
+func IsSessionName(name string) bool {
+	return strings.HasPrefix(name, NamePrefix)
+}
+
+// IsTemplateName reports whether a machine is a profile template.
+func IsTemplateName(name string) bool {
+	return strings.HasPrefix(name, TemplatePrefix)
 }

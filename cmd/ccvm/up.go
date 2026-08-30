@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -67,13 +68,9 @@ func cmdUp(a *app, args []string) error {
 		return fmt.Errorf("--vm is proxmox-only; --backend %s does not have LXC and VM variants", chosen)
 	}
 
-	image := cfg.Backend[chosen].Image
-	if chosen == "orbstack" {
-		image = cfg.Backend[chosen].Template
-	}
-	if image == "" && chosen != "proxmox" {
-		return fmt.Errorf("profile %q has no image for backend %q; run `ccvm profiles build %s --backend %s`, or pick another backend",
-			*profileName, chosen, *profileName, chosen)
+	image, err := imageForBackend(cfg, chosen, *useVM)
+	if err != nil {
+		return fmt.Errorf("profile %q: %w", *profileName, err)
 	}
 
 	spec := backend.Spec{
@@ -152,18 +149,24 @@ func cmdUp(a *app, args []string) error {
 		}
 	}
 
-	if _, err := a.ssh.EnsureInclude(); err != nil {
-		fmt.Fprintf(a.err, "ccvm: could not update ~/.ssh/config: %v\n", err)
-	}
-	host := sshcfg.Host{Name: spec.Name, HostName: "127.0.0.1", Port: spec.SSHPort, User: "root"}
-	if err := a.ssh.Add(host); err != nil {
-		unwind()
-		return &Fault{
-			Backend: chosen, Step: "write the ssh config entry", Cause: err,
-			Cleanup: "machine destroyed; nothing left running.",
+	// Only backends reached over a forwarded loopback port need an entry.
+	// OrbStack answers to <name>@orb through its own multiplexing ssh server,
+	// and proxmox guests have real addresses, so writing one would shadow the
+	// working target with a broken one.
+	if needsPort(chosen) {
+		if _, err := a.ssh.EnsureInclude(); err != nil {
+			fmt.Fprintf(a.err, "ccvm: could not update ~/.ssh/config: %v\n", err)
 		}
+		host := sshcfg.Host{Name: spec.Name, HostName: "127.0.0.1", Port: spec.SSHPort, User: "root"}
+		if err := a.ssh.Add(host); err != nil {
+			unwind()
+			return &Fault{
+				Backend: chosen, Step: "write the ssh config entry", Cause: err,
+				Cleanup: "machine destroyed; nothing left running.",
+			}
+		}
+		rollback = append(rollback, func() { _ = a.ssh.Remove(spec.Name) })
 	}
-	rollback = append(rollback, func() { _ = a.ssh.Remove(spec.Name) })
 
 	if err := a.writeSessionRecord(b, handle, spec); err != nil {
 		unwind()
@@ -174,7 +177,7 @@ func cmdUp(a *app, args []string) error {
 	}
 
 	fmt.Fprintf(a.out, "%s is up (%s, %s)\n", spec.Name, chosen, mode)
-	fmt.Fprintf(a.out, "  ssh %s\n", spec.Name)
+	fmt.Fprintf(a.out, "  ssh %s\n", b.SSHTarget(handle))
 	return nil
 }
 
@@ -266,6 +269,43 @@ func (a *app) printPlan(spec backend.Spec, chosen string, cfg *profile.Config, i
 		fmt.Fprintln(a.out, "  claude    --dangerously-skip-permissions")
 	}
 	return nil
+}
+
+// imageForBackend resolves what a backend builds a machine from. The word
+// means something different in each: a registry reference for docker and k8s, a
+// template machine for orbstack, a template vmid for proxmox. Resolving it in
+// one place keeps `up` and `doctor` from disagreeing.
+func imageForBackend(cfg *profile.Config, backendName string, useVM bool) (string, error) {
+	b, ok := cfg.Backend[backendName]
+	if !ok || b.Empty() {
+		return "", fmt.Errorf("no usable [backend.%s]; run `ccvm profiles build <name> --backend %s`, or pick another backend",
+			backendName, backendName)
+	}
+
+	switch backendName {
+	case "orbstack":
+		if b.Template == "" {
+			return "", fmt.Errorf("[backend.orbstack] has no template")
+		}
+		return b.Template, nil
+
+	case "proxmox":
+		id := b.LXCTemplate
+		kind := "lxc_template"
+		if useVM {
+			id, kind = b.VMTemplate, "vm_template"
+		}
+		if id == 0 {
+			return "", fmt.Errorf("[backend.proxmox] has no %s", kind)
+		}
+		return strconv.Itoa(id), nil
+
+	default:
+		if b.Image == "" {
+			return "", fmt.Errorf("[backend.%s] has no image", backendName)
+		}
+		return b.Image, nil
+	}
 }
 
 func checkCodeMode(mode, backendName string) error {

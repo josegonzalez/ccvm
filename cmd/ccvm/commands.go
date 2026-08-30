@@ -106,6 +106,11 @@ func (a *app) listAll(includeUnowned bool) ([]backend.Machine, error) {
 			if s.Profile != "" {
 				out[i].Profile = s.Profile
 			}
+			// orbstack and k8s carry no project field of their own, so the
+			// record inside the machine is the only source.
+			if out[i].Project == "" {
+				out[i].Project = s.Project
+			}
 			if out[i].Created.IsZero() {
 				out[i].Created = s.Created
 			}
@@ -466,7 +471,13 @@ func cmdDoctor(a *app, args []string) error {
 			return err
 		}
 		s := spec
-		s.Image = c.Backend[name].Image
+		img, err := imageForBackend(c, name, false)
+		if err != nil {
+			failures++
+			fmt.Fprintf(a.out, "%-9s unusable: %v\n", name, err)
+			continue
+		}
+		s.Image = img
 
 		if err := b.Preflight(a.ctx, s); err != nil {
 			failures++

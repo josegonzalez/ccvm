@@ -23,13 +23,27 @@ import (
 	"github.com/josegonzalez/ccvm/internal/session"
 )
 
+// imageFor resolves what a backend builds a machine from. The word "image"
+// means different things per backend: a registry reference for docker and k8s,
+// a template machine for orbstack, a template vmid for proxmox.
+func imageFor(name string) string {
+	switch name {
+	case "orbstack":
+		return envOr("CCVM_ITEST_ORBSTACK_TEMPLATE", "ccvm-base")
+	case "proxmox":
+		return envOr("CCVM_ITEST_PROXMOX_TEMPLATE", "9000")
+	default:
+		return itest.Image()
+	}
+}
+
 // probeFor is how the suite decides a requested backend is actually usable.
 // It must not create anything.
 func probeFor(name string, b backend.Backend) func() error {
 	return func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		return b.Preflight(ctx, backend.Spec{Profile: "base", Image: itest.Image()})
+		return b.Preflight(ctx, backend.Spec{Profile: "base", Image: imageFor(name)})
 	}
 }
 
@@ -96,7 +110,7 @@ func specFor(t *testing.T, name string) backend.Spec {
 	return backend.Spec{
 		Name:      uniqueName(t),
 		Profile:   "base",
-		Image:     itest.Image(),
+		Image:     imageFor(name),
 		Project:   project,
 		WorkDir:   "/work",
 		CodeMode:  "mount",
@@ -114,7 +128,9 @@ func uniqueName(t *testing.T) string {
 	if len(base) > 24 {
 		base = base[len(base)-24:]
 	}
-	return "ccvm-it-" + strings.Trim(base, "-")
+	// The prefix is what marks the machine as a session on backends with no
+	// metadata field, so it has to survive into the name.
+	return backend.NamePrefix + "it-" + strings.Trim(base, "-")
 }
 
 // mustCreate creates a machine and registers its destruction, so a failing
@@ -416,7 +432,7 @@ func TestPreflightCreatesNothing(t *testing.T) {
 			t.Fatalf("List: %v", err)
 		}
 		if err := b.Preflight(ctx, backend.Spec{
-			Name: uniqueName(t), Profile: "base", Image: itest.Image(),
+			Name: uniqueName(t), Profile: "base", Image: imageFor(name),
 		}); err != nil {
 			t.Fatalf("Preflight: %v", err)
 		}
