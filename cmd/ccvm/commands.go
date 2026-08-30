@@ -382,8 +382,22 @@ func cmdProfiles(a *app, args []string) error {
 			return fmt.Errorf("usage: ccvm profiles lint <name>")
 		}
 		return a.profilesLint(args[0])
+	case "build":
+		// The profile name comes first, so it is pulled off before flag
+		// parsing: Go's flag package stops at the first non-flag argument and
+		// would otherwise hand the name back as an unparsed positional.
+		if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+			return fmt.Errorf("usage: ccvm profiles build <name> [--backend B]")
+		}
+		name := args[0]
+		fs := newFlags("profiles build", a)
+		backendName := fs.String("backend", "", "backend to build for")
+		if err := fs.Parse(args[1:]); err != nil {
+			return errUsage
+		}
+		return a.profilesBuild(name, *backendName, fs.Args())
 	default:
-		return fmt.Errorf("unknown subcommand %q; try list or lint", sub)
+		return fmt.Errorf("unknown subcommand %q; try list, lint, or build", sub)
 	}
 }
 

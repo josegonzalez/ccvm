@@ -585,3 +585,38 @@ func TestUpDetachReturnsWithoutEnteringASession(t *testing.T) {
 		t.Errorf("got %d machines, want the detached one still running", len(machines))
 	}
 }
+
+// The broker machine must provision with no credential, or the login path can
+// never be bootstrapped.
+func TestUpNoCredentialProvisionsWithoutOne(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, out, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+
+	if err := cmdUp(a, []string{"-detach", "-no-credential", dir}); err != nil {
+		t.Fatalf("cmdUp: %v", err)
+	}
+	// Writing an empty env file would shadow the login about to be minted
+	// inside, since an environment token outranks a /login credential.
+	if _, ok := f.FileIn("cc-demo", "/etc/ccvm/env"); ok {
+		t.Error("a broker machine was given an env file; it would shadow the login minted inside it")
+	}
+	if !strings.Contains(out.String(), "broker") {
+		t.Errorf("out = %q, want the mode named", out.String())
+	}
+}
+
+func TestUpNoCredentialConflictsWithRemoteControl(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	err := cmdUp(a, []string{"-detach", "-no-credential", "-remote-control", dir})
+	if err == nil {
+		t.Fatal("expected these flags to be refused together")
+	}
+	if f.CreateCalls != 0 {
+		t.Error("a machine was created despite contradictory flags")
+	}
+}

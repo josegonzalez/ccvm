@@ -40,6 +40,7 @@ func cmdUp(a *app, args []string) error {
 		install     = fs.String("install", "", "extra packages to install at spawn, comma separated")
 		dryRun      = fs.Bool("dry-run", false, "resolve and preflight without creating anything")
 		detach      = fs.Bool("detach", false, "provision and return instead of entering the session")
+		noCred      = fs.Bool("no-credential", false, "provision without installing a Claude credential, for building a broker machine")
 	)
 	if err := fs.Parse(args); err != nil {
 		return errUsage
@@ -97,9 +98,21 @@ func cmdUp(a *app, args []string) error {
 		CreatedAt: time.Now().UTC(),
 	}
 
-	cred, err := creds.Resolve(a.home, os.Getenv, *remoteCtl)
-	if err != nil {
-		return err
+	// A broker machine is where a claude.ai login is minted, so it is the one
+	// machine that cannot already have a credential to install. Without this
+	// the login path could never be bootstrapped.
+	var cred creds.Source
+	if *noCred {
+		if *remoteCtl {
+			return fmt.Errorf("--no-credential and --remote-control are contradictory: " +
+				"one provisions a machine with no Claude credential, the other needs one")
+		}
+		cred = creds.Source{Mode: creds.None}
+	} else {
+		cred, err = creds.Resolve(a.home, os.Getenv, *remoteCtl)
+		if err != nil {
+			return err
+		}
 	}
 	if *remoteCtl && *yolo {
 		fmt.Fprintln(a.err, "ccvm: warning: --remote-control with --yolo gives a session that bypasses\n"+
@@ -377,8 +390,13 @@ func (a *app) installCredentials(b backend.Backend, h backend.Handle, spec backe
 	if _, err := b.Exec(a.ctx, h, "mkdir", "-p", filepath.Dir(creds.GuestEnvFile)); err != nil {
 		return err
 	}
-	if err := a.pushString(b, h, c.EnvFile(), creds.GuestEnvFile, "600"); err != nil {
-		return fmt.Errorf("write %s: %w", creds.GuestEnvFile, err)
+	// A broker gets no env file at all. Writing an empty one would shadow the
+	// login the user is about to mint inside it, since an environment token
+	// outranks a /login credential.
+	if c.Mode != creds.None {
+		if err := a.pushString(b, h, c.EnvFile(), creds.GuestEnvFile, "600"); err != nil {
+			return fmt.Errorf("write %s: %w", creds.GuestEnvFile, err)
+		}
 	}
 
 	if c.Mode == creds.Login {

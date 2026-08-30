@@ -42,10 +42,13 @@ func TestOrbstackCreateClonesTemplate(t *testing.T) {
 
 // OrbStack multiplexes ssh itself, so no port is allocated and nothing is
 // written to ~/.ssh/config.
-func TestOrbstackSSHTargetUsesBuiltInServer(t *testing.T) {
+// The user must be explicit: OrbStack connects as the machine's default account
+// otherwise, which cannot read /root — where claude lives and where ccvm puts
+// the session's key and credential. It surfaces as "claude: command not found".
+func TestOrbstackSSHTargetNamesTheUser(t *testing.T) {
 	o, _ := newOrbstack(t)
-	if got := o.SSHTarget(backend.Handle{Name: "cc-foo"}); got != "cc-foo@orb" {
-		t.Errorf("SSHTarget = %q, want cc-foo@orb", got)
+	if got := o.SSHTarget(backend.Handle{Name: "cc-foo"}); got != "root@cc-foo@orb" {
+		t.Errorf("SSHTarget = %q, want root@cc-foo@orb", got)
 	}
 }
 
@@ -128,7 +131,7 @@ func TestOrbstackListFiltersByNamePrefix(t *testing.T) {
 	if got[1].Name != "cc-bar" || got[1].State != backend.StateStopped {
 		t.Errorf("machines[1] = %+v", got[1])
 	}
-	if got[0].SSH != "cc-foo@orb" {
+	if got[0].SSH != "root@cc-foo@orb" {
 		t.Errorf("SSH = %q", got[0].SSH)
 	}
 }

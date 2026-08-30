@@ -31,6 +31,10 @@ const (
 	Token Mode = "token"
 	// Login copies a full claude.ai login and supports Remote Control.
 	Login Mode = "login"
+	// None installs nothing. It exists for the broker machine, which is where
+	// a login is minted and so is the one machine that cannot already have a
+	// credential to install.
+	None Mode = "none"
 )
 
 // GuestEnvFile is where a session's secrets land inside the machine.
@@ -84,8 +88,10 @@ func resolveToken(home string, env func(string) string) (Source, error) {
 	return Source{}, fmt.Errorf(
 		"no Claude credential for the session.\n"+
 			"Run `claude setup-token` and either export CLAUDE_CODE_OAUTH_TOKEN or write it to %s.\n"+
-			"For Remote Control from claude.ai or your phone, use `ccvm up --remote-control` instead",
-		path)
+			"For Remote Control from claude.ai or your phone, you need a claude.ai login instead; "+
+			"build the machine to mint one in with `ccvm up --no-credential --keep --detach`, "+
+			"run `claude` and `/login` inside it, then copy its ~/.claude/.credentials.json to %s",
+		path, filepath.Join(home, ".config", "ccvm", "credentials.json"))
 }
 
 func resolveLogin(home string, env func(string) string) (Source, error) {
@@ -172,6 +178,8 @@ func (s Source) Describe() string {
 		return "claude.ai login (Remote Control available)"
 	case Token:
 		return "OAuth token (model requests only)"
+	case None:
+		return "no credential (broker machine)"
 	default:
 		return string(s.Mode)
 	}

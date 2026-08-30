@@ -79,7 +79,7 @@ func TestResolveNoTokenExplainsBothPaths(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error")
 	}
-	for _, want := range []string{"claude setup-token", "CLAUDE_CODE_OAUTH_TOKEN", "--remote-control"} {
+	for _, want := range []string{"claude setup-token", "CLAUDE_CODE_OAUTH_TOKEN", "--no-credential"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("err = %v\nwant it to mention %q", err, want)
 		}
@@ -245,4 +245,31 @@ func writeLogin(t *testing.T, expires time.Time) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// The broker is where a login is minted, so it is the one machine that cannot
+// already have a credential. Without a no-credential mode the login path could
+// never be bootstrapped.
+func TestNoneModeInstallsNothingAndCannotDoRemoteControl(t *testing.T) {
+	s := creds.Source{Mode: creds.None}
+	if s.SupportsRemoteControl() {
+		t.Error("the broker mode claims Remote Control support")
+	}
+	if !strings.Contains(s.Describe(), "broker") {
+		t.Errorf("Describe = %q, want it to name the purpose", s.Describe())
+	}
+}
+
+// The missing-credential message is where a new user learns how to bootstrap
+// the login path, so it has to carry the whole recipe.
+func TestResolveErrorExplainsHowToBuildABroker(t *testing.T) {
+	_, err := creds.Resolve(t.TempDir(), noEnv, false)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	for _, want := range []string{"--no-credential", "/login", "credentials.json"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v\nwant it to mention %q", err, want)
+		}
+	}
 }

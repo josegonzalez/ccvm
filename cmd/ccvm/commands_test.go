@@ -11,6 +11,7 @@ import (
 	"github.com/josegonzalez/ccvm/internal/backend"
 	"github.com/josegonzalez/ccvm/internal/backendtest"
 	"github.com/josegonzalez/ccvm/internal/profile"
+	"github.com/josegonzalez/ccvm/internal/run"
 	"github.com/josegonzalez/ccvm/internal/session"
 	"github.com/josegonzalez/ccvm/internal/sshcfg"
 	"github.com/josegonzalez/ccvm/internal/sshkey"
@@ -32,6 +33,7 @@ func newTestApp(t *testing.T, fake *backendtest.Fake) (*app, *bytes.Buffer, *byt
 	return &app{
 		ctx:      context.Background(),
 		home:     home,
+		runner:   run.NewFake(),
 		out:      &out,
 		err:      &errOut,
 		profiles: profile.DefaultSource(home, profiles.FS()),

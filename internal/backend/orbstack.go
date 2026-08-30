@@ -120,8 +120,14 @@ func (o *Orbstack) Wait(ctx context.Context, h Handle) error {
 
 // SSHTarget uses OrbStack's built-in multiplexing ssh server, so nothing has to
 // be written to ~/.ssh/config and no port is allocated.
+//
+// The user is explicit. OrbStack connects as the machine's default account
+// otherwise, which cannot read /root — where claude is installed and where
+// ccvm puts the session's key and credential. The failure looks like
+// "claude: command not found" rather than a permission error, so it is worth
+// being unambiguous here.
 func (o *Orbstack) SSHTarget(h Handle) string {
-	return h.Name + "@orb"
+	return o.user() + "@" + h.Name + "@orb"
 }
 
 func (o *Orbstack) Exec(ctx context.Context, h Handle, argv ...string) ([]byte, error) {
@@ -193,7 +199,7 @@ func (o *Orbstack) List(ctx context.Context) ([]Machine, error) {
 			Backend: "orbstack",
 			ID:      m.ID,
 			State:   normalizeOrbState(m.State),
-			SSH:     m.Name + "@orb",
+			SSH:     o.user() + "@" + m.Name + "@orb",
 		})
 	}
 	return out, nil
