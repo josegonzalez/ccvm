@@ -20,10 +20,16 @@ All four are implemented. Proxmox needs `CCVM_PROXMOX_URL`, `CCVM_PROXMOX_TOKEN_
 and `CCVM_PROXMOX_SECRET`; k8s uses your current kubectl context. `ccvm doctor`
 reports which are ready.
 
-Two limitations worth knowing. Reaching a k8s session over ssh needs a
-`kubectl port-forward` you run yourself — ccvm does not yet supervise one, and
-it is a foreground process that dies on network blips. And proxmox guest boot
-is only exercised by hand; see Testing.
+One limitation worth knowing: proxmox guest boot is only exercised by hand.
+See Testing.
+
+Reaching a kubernetes session goes through a supervised `kubectl port-forward`,
+which ccvm establishes for the duration of any command that needs ssh and
+restarts if it dies. A forward only exists while something holds it, so a
+detached k8s session is unreachable between commands — that is the shape of
+`kubectl port-forward`, not a choice. Claude runs under tmux, so a dropped
+forward detaches the session rather than ending it, and `ccvm attach` returns to
+it.
 
 ## Install
 

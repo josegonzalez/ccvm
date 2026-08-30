@@ -13,6 +13,7 @@ import (
 	"github.com/josegonzalez/ccvm/internal/backend"
 	"github.com/josegonzalez/ccvm/internal/code"
 	"github.com/josegonzalez/ccvm/internal/creds"
+	"github.com/josegonzalez/ccvm/internal/kubefwd"
 	"github.com/josegonzalez/ccvm/internal/profile"
 	"github.com/josegonzalez/ccvm/internal/provision"
 	"github.com/josegonzalez/ccvm/internal/session"
@@ -185,6 +186,20 @@ func cmdUp(a *app, args []string) error {
 			Cause:   err,
 			Cleanup: "machine destroyed; nothing left running.",
 		}
+	}
+
+	// A kubernetes session is only reachable through a forwarded local port,
+	// and everything below this needs ssh.
+	if fwd, err := a.startForward(b, handle, spec); err != nil {
+		unwind()
+		return &Fault{
+			Backend: chosen, Step: "forward a local port to the pod", Cause: err,
+			Fix:     "check that the pod is running and kubectl can reach the cluster",
+			Cleanup: "machine destroyed; nothing left running.",
+		}
+	} else if fwd != nil {
+		rollback = append(rollback, func() { _ = fwd.Stop() })
+		defer fwd.Stop()
 	}
 
 	if err := a.installSSHKey(b, handle); err != nil {
@@ -426,6 +441,36 @@ func (a *app) readSessionFrom(b backend.Backend, h backend.Handle) (session.Sess
 	}
 	return session.Unmarshal(data)
 }
+
+// startForward establishes a port-forward for backends that need one.
+//
+// Only kubernetes does: docker publishes a port at create time, and orbstack
+// and proxmox give machines addresses of their own.
+func (a *app) startForward(b backend.Backend, h backend.Handle, spec backend.Spec) (*kubefwd.Forwarder, error) {
+	k, ok := b.(*backend.K8s)
+	if !ok {
+		return nil, nil
+	}
+	pod, err := k.PodName(a.ctx, h)
+	if err != nil {
+		return nil, err
+	}
+	fwd := kubefwd.New(a.kubeNamespace(), a.kubeContext(), pod, spec.SSHPort)
+	fwd.Log = a.err
+	if err := fwd.Start(a.ctx); err != nil {
+		return nil, err
+	}
+	return fwd, nil
+}
+
+func (a *app) kubeNamespace() string {
+	if v := strings.TrimSpace(os.Getenv("CCVM_KUBE_NAMESPACE")); v != "" {
+		return v
+	}
+	return "default"
+}
+
+func (a *app) kubeContext() string { return os.Getenv("CCVM_KUBE_CONTEXT") }
 
 // attachOptions builds the session invocation.
 //
@@ -841,7 +886,77 @@ func cmdSSH(a *app, args []string) error {
 	if err != nil {
 		return err
 	}
+	stop, err := a.holdForward(name)
+	if err != nil {
+		return err
+	}
+	defer stop()
 	return attach.Shell(attach.Options{Target: target, IdentityFile: a.sshKey.Private}, rest...)
+}
+
+// holdForward establishes a port-forward for the duration of a command, for
+// backends that need one.
+//
+// A kubernetes forward only exists while something holds it, so every command
+// that reaches a machine over ssh has to establish its own. That is the honest
+// shape of `kubectl port-forward` rather than a limitation ccvm chose.
+func (a *app) holdForward(name string) (func(), error) {
+	noop := func() {}
+
+	machines, err := a.listAll(true)
+	if err != nil {
+		return noop, err
+	}
+	var found *backend.Machine
+	for i := range machines {
+		if machines[i].Name == name {
+			found = &machines[i]
+			break
+		}
+	}
+	if found == nil {
+		return noop, fmt.Errorf("no machine named %q", name)
+	}
+
+	b, err := a.backend(found.Backend)
+	if err != nil {
+		return noop, err
+	}
+	k, ok := b.(*backend.K8s)
+	if !ok {
+		return noop, nil
+	}
+
+	port, err := a.sshPortFor(name)
+	if err != nil {
+		return noop, err
+	}
+	pod, err := k.PodName(a.ctx, found.Handle())
+	if err != nil {
+		return noop, err
+	}
+
+	fwd := kubefwd.New(a.kubeNamespace(), a.kubeContext(), pod, port)
+	fwd.Log = a.err
+	if err := fwd.Start(a.ctx); err != nil {
+		return noop, err
+	}
+	return func() { _ = fwd.Stop() }, nil
+}
+
+// sshPortFor reads the local port ccvm recorded for a machine, so a forward
+// lands where the ssh config already points.
+func (a *app) sshPortFor(name string) (int, error) {
+	hosts, err := a.ssh.Read()
+	if err != nil {
+		return 0, err
+	}
+	for _, h := range hosts {
+		if h.Name == name && h.Port != 0 {
+			return h.Port, nil
+		}
+	}
+	return 0, fmt.Errorf("no ssh port recorded for %s; recreate it with `ccvm up`", name)
 }
 
 // cmdAttach reconnects to the machine's Claude session. tmux new -A attaches if
@@ -856,6 +971,11 @@ func cmdAttach(a *app, args []string) error {
 	if err != nil {
 		return err
 	}
+	stop, err := a.holdForward(name)
+	if err != nil {
+		return err
+	}
+	defer stop()
 	return attach.Run(attach.Options{
 		Target:       target,
 		SessionName:  name,

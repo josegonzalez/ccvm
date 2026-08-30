@@ -323,10 +323,18 @@ func (k *K8s) podEvents(ctx context.Context, h Handle) string {
 	return ""
 }
 
-// SSHTarget names the machine. Reaching a pod over ssh needs a port-forward,
-// which the caller supervises: it is a foreground process that dies on network
-// blips and pod restarts, so it cannot be owned by a single method call.
+// SSHTarget names the machine, which resolves through the ssh config entry
+// pointing at the forwarded local port.
+//
+// The forward itself is the caller's to hold: it is a foreground process that
+// dies on network blips and pod restarts, so it outlives no single method call.
 func (k *K8s) SSHTarget(h Handle) string { return h.Name }
+
+// PodName returns the pod backing a session, which a port-forward has to
+// address directly.
+func (k *K8s) PodName(ctx context.Context, h Handle) (string, error) {
+	return k.podName(ctx, h)
+}
 
 func (k *K8s) podName(ctx context.Context, h Handle) (string, error) {
 	out, err := k.Runner.Run(ctx, k.kubectl("get", "pods",
