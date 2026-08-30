@@ -387,3 +387,35 @@ func TestDockerKeepAndAutoRemoveAreConsistent(t *testing.T) {
 		}
 	}
 }
+
+func TestRegistryBuildsDocker(t *testing.T) {
+	b, err := backend.New("docker", run.NewFake(), backend.Config{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if b.Name() != "docker" {
+		t.Errorf("Name() = %q", b.Name())
+	}
+}
+
+func TestRegistryUnknownBackendListsAvailable(t *testing.T) {
+	_, err := backend.New("frobnicate", run.NewFake(), backend.Config{})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "docker") {
+		t.Errorf("err = %v, want it to list what is available", err)
+	}
+}
+
+func TestDockerStopDoesNotRemove(t *testing.T) {
+	d, f := newDocker(t)
+	f.On("docker", "stop").Stdout("cc-foo\n")
+
+	if err := d.Stop(context.Background(), backend.Handle{Name: "cc-foo"}); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if f.Ran("docker", "rm") {
+		t.Error("Stop removed the container; the reaper must be able to read a stopped machine")
+	}
+}

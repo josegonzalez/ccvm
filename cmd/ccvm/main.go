@@ -137,6 +137,19 @@ func newApp(ctx context.Context, verbose bool, stdout, stderr io.Writer) (*app, 
 	}
 	runner := run.New(logTo)
 
+	// Every registered backend is built up front so `ccvm ls` and `ccvm doctor`
+	// can span all of them. Construction is cheap and does not contact
+	// anything; reachability is Preflight's job.
+	backends := map[string]backend.Backend{}
+	cfg := backendConfig()
+	for _, name := range backend.Names() {
+		b, err := backend.New(name, runner, cfg)
+		if err != nil {
+			return nil, err
+		}
+		backends[name] = b
+	}
+
 	return &app{
 		ctx:      ctx,
 		home:     home,
@@ -146,10 +159,30 @@ func newApp(ctx context.Context, verbose bool, stdout, stderr io.Writer) (*app, 
 		runner:   runner,
 		profiles: profile.DefaultSource(home, profiles.FS()),
 		ssh:      sshcfg.Default(home),
-		backends: map[string]backend.Backend{
-			"docker": backend.NewDocker(runner),
-		},
+		backends: backends,
 	}, nil
+}
+
+// backendConfig reads the settings backends need beyond the profile. Proxmox
+// and kubernetes point at a control plane; the local backends need nothing.
+func backendConfig() backend.Config {
+	return backend.Config{
+		ProxmoxURL:      os.Getenv("CCVM_PROXMOX_URL"),
+		ProxmoxNode:     os.Getenv("CCVM_PROXMOX_NODE"),
+		ProxmoxTokenID:  os.Getenv("CCVM_PROXMOX_TOKEN_ID"),
+		ProxmoxSecret:   os.Getenv("CCVM_PROXMOX_SECRET"),
+		ProxmoxStorage:  os.Getenv("CCVM_PROXMOX_STORAGE"),
+		ProxmoxInsecure: os.Getenv("CCVM_PROXMOX_INSECURE") != "",
+		KubeNamespace:   envOrDefault("CCVM_KUBE_NAMESPACE", "default"),
+		KubeContext:     os.Getenv("CCVM_KUBE_CONTEXT"),
+	}
+}
+
+func envOrDefault(key, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return fallback
 }
 
 // backendNames returns the configured backends in a stable order.

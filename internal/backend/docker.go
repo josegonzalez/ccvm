@@ -256,3 +256,13 @@ func (d *Docker) AutoRemoves(ctx context.Context, h Handle) (bool, error) {
 }
 
 var _ EphemeralReporter = (*Docker)(nil)
+
+// Stop halts a container without removing it.
+//
+// It is separate from Destroy because the reaper has to read a stopped
+// machine's TTL before deciding its fate, and because `ccvm keep` is only
+// meaningful if stopping is survivable.
+func (d *Docker) Stop(ctx context.Context, h Handle) error {
+	_, err := d.Runner.Run(ctx, d.bin(), "stop", h.Name)
+	return err
+}

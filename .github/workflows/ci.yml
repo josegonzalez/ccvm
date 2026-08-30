@@ -89,13 +89,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Build the base profile image
-        run: |
-          if [ -f profiles/base/Dockerfile ]; then
-            docker build -t ccvm/base:ci profiles/base
-          else
-            echo "no base image yet; integration suite will report what it cannot run"
-          fi
+      - name: Build the base session image
+        run: make image IMAGE=ccvm/base:ci
       - name: Integration tests
         env:
           # Naming a backend here makes it required. The suite fails rather
@@ -103,7 +98,7 @@ jobs:
           # reports green while testing nothing.
           CCVM_ITEST_BACKENDS: docker
           CCVM_ITEST_IMAGE: ccvm/base:ci
-        run: go test -tags=integration -count=1 ./...
+        run: go test -tags=integration -count=1 -timeout 20m ./...
 
   integration-k8s:
     needs: [test]
@@ -118,15 +113,13 @@ jobs:
           cluster_name: ccvm-ci
       - name: Load the base image into kind
         run: |
-          if [ -f profiles/base/Dockerfile ]; then
-            docker build -t ccvm/base:ci profiles/base
-            kind load docker-image ccvm/base:ci --name ccvm-ci
-          fi
+          make image IMAGE=ccvm/base:ci
+          kind load docker-image ccvm/base:ci --name ccvm-ci
       - name: Integration tests
         env:
           CCVM_ITEST_BACKENDS: k8s
           CCVM_ITEST_IMAGE: ccvm/base:ci
-        run: go test -tags=integration -count=1 ./...
+        run: go test -tags=integration -count=1 -timeout 20m ./...
 
   integration-proxmox:
     # Hosted runners have no nested virtualization, so guest boot is out of
@@ -163,6 +156,6 @@ jobs:
           CCVM_ITEST_PROXMOX_URL: https://localhost:8006
           # Guest boot needs a real hypervisor; this tier covers the API only.
           CCVM_ITEST_PROXMOX_CONTROL_PLANE_ONLY: "1"
-        run: go test -tags=integration -count=1 ./...
+        run: go test -tags=integration -count=1 -timeout 20m ./...
       - if: always()
         run: docker rm -f pve || true

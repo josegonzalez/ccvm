@@ -1,0 +1,451 @@
+//go:build integration
+
+// Integration tests exercise real backends. They are opt-in: name the backends
+// in CCVM_ITEST_BACKENDS, and a named backend that turns out to be unavailable
+// fails rather than skips.
+//
+// The suite is deliberately backend-agnostic. Everything here is a claim about
+// the Backend contract, so a new backend inherits the whole suite by
+// registering itself.
+package backend_test
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/josegonzalez/ccvm/internal/backend"
+	"github.com/josegonzalez/ccvm/internal/itest"
+	"github.com/josegonzalez/ccvm/internal/run"
+	"github.com/josegonzalez/ccvm/internal/session"
+)
+
+// probeFor is how the suite decides a requested backend is actually usable.
+// It must not create anything.
+func probeFor(name string, b backend.Backend) func() error {
+	return func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return b.Preflight(ctx, backend.Spec{Profile: "base", Image: itest.Image()})
+	}
+}
+
+func configFromEnv() backend.Config {
+	return backend.Config{
+		ProxmoxURL:      os.Getenv("CCVM_ITEST_PROXMOX_URL"),
+		ProxmoxNode:     os.Getenv("CCVM_ITEST_PROXMOX_NODE"),
+		ProxmoxTokenID:  os.Getenv("CCVM_ITEST_PROXMOX_TOKEN_ID"),
+		ProxmoxSecret:   os.Getenv("CCVM_ITEST_PROXMOX_SECRET"),
+		ProxmoxStorage:  os.Getenv("CCVM_ITEST_PROXMOX_STORAGE"),
+		ProxmoxInsecure: os.Getenv("CCVM_ITEST_PROXMOX_INSECURE") != "",
+		KubeNamespace:   envOr("CCVM_ITEST_KUBE_NAMESPACE", "default"),
+		KubeContext:     os.Getenv("CCVM_ITEST_KUBE_CONTEXT"),
+	}
+}
+
+func envOr(key, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// controlPlaneOnly reports whether a backend can create machines here.
+// Containerized Proxmox in CI has a real API but no hypervisor: guest boot is
+// out of reach, and pretending otherwise would fail for the wrong reason.
+func controlPlaneOnly(name string) bool {
+	return name == "proxmox" && os.Getenv("CCVM_ITEST_PROXMOX_CONTROL_PLANE_ONLY") != ""
+}
+
+// eachBackend runs fn against every requested backend, gating each one.
+func eachBackend(t *testing.T, fn func(t *testing.T, name string, b backend.Backend)) {
+	t.Helper()
+	itest.SkipUnlessAnyRequested(t)
+
+	for _, name := range itest.Requested() {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			b, err := backend.New(name, run.New(testLogger{t}), configFromEnv())
+			if err != nil {
+				t.Fatalf("backend %q was required but could not be built: %v", name, err)
+			}
+			itest.Gate(t, name, probeFor(name, b))
+			fn(t, name, b)
+		})
+	}
+}
+
+// testLogger routes --verbose output into the test log, so a failure shows the
+// exact commands that produced it.
+type testLogger struct{ t *testing.T }
+
+func (l testLogger) Write(p []byte) (int, error) {
+	l.t.Logf("%s", strings.TrimRight(string(p), "\n"))
+	return len(p), nil
+}
+
+func specFor(t *testing.T, name string) backend.Spec {
+	t.Helper()
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return backend.Spec{
+		Name:      uniqueName(t),
+		Profile:   "base",
+		Image:     itest.Image(),
+		Project:   project,
+		WorkDir:   "/work",
+		CodeMode:  "mount",
+		CPUs:      1,
+		Memory:    "1G",
+		TTL:       "1h",
+		CreatedAt: time.Now().UTC(),
+	}
+}
+
+// uniqueName keeps concurrent runs and leftovers from colliding.
+func uniqueName(t *testing.T) string {
+	base := strings.ToLower(t.Name())
+	base = strings.NewReplacer("/", "-", "_", "-", " ", "-").Replace(base)
+	if len(base) > 24 {
+		base = base[len(base)-24:]
+	}
+	return "ccvm-it-" + strings.Trim(base, "-")
+}
+
+// mustCreate creates a machine and registers its destruction, so a failing
+// test does not leave infrastructure behind.
+func mustCreate(t *testing.T, b backend.Backend, spec backend.Spec) backend.Handle {
+	t.Helper()
+	ctx := testCtx(t)
+
+	h, err := b.Create(ctx, spec)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() {
+		// Best effort: the test may already have destroyed it.
+		_ = b.Destroy(context.Background(), h)
+	})
+
+	if err := b.Start(ctx, h); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := b.Wait(ctx, h); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	return h
+}
+
+func testCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// TestLifecycle is the core claim: a machine can be created, becomes usable,
+// runs commands, and goes away.
+func TestLifecycle(t *testing.T) {
+	eachBackend(t, func(t *testing.T, name string, b backend.Backend) {
+		if controlPlaneOnly(name) {
+			t.Skip("guest boot needs a hypervisor; this tier covers the control plane only")
+		}
+		ctx := testCtx(t)
+		spec := specFor(t, name)
+		h := mustCreate(t, b, spec)
+
+		out, err := b.Exec(ctx, h, "sh", "-c", "echo alive")
+		if err != nil {
+			t.Fatalf("Exec: %v", err)
+		}
+		if !strings.Contains(string(out), "alive") {
+			t.Errorf("Exec output = %q", out)
+		}
+
+		if target := b.SSHTarget(h); target == "" {
+			t.Error("SSHTarget is empty; the machine is unreachable")
+		}
+
+		found := false
+		machines, err := b.List(ctx)
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		for _, m := range machines {
+			if m.Name == spec.Name {
+				found = true
+				if m.State != backend.StateRunning {
+					t.Errorf("State = %q, want running", m.State)
+				}
+				if m.Backend != name {
+					t.Errorf("Backend = %q, want %q", m.Backend, name)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("machine %q missing from List", spec.Name)
+		}
+
+		if err := b.Destroy(ctx, h); err != nil {
+			t.Fatalf("Destroy: %v", err)
+		}
+
+		machines, err = b.List(ctx)
+		if err != nil {
+			t.Fatalf("List after destroy: %v", err)
+		}
+		for _, m := range machines {
+			if m.Name == spec.Name {
+				t.Errorf("machine %q survived Destroy", spec.Name)
+			}
+		}
+	})
+}
+
+// The session record is what ccvm-done, ls, and the reaper all read, so it has
+// to survive a round trip through the machine.
+func TestSessionRecordRoundTrip(t *testing.T) {
+	eachBackend(t, func(t *testing.T, name string, b backend.Backend) {
+		if controlPlaneOnly(name) {
+			t.Skip("guest boot needs a hypervisor")
+		}
+		ctx := testCtx(t)
+		spec := specFor(t, name)
+		h := mustCreate(t, b, spec)
+
+		want := session.Session{
+			Name: spec.Name, Backend: name, Profile: "base",
+			Project: spec.Project, WorkDir: "/work", CodeMode: "mount",
+			Created: spec.CreatedAt, TTL: "1h",
+		}
+		data, err := session.Marshal(want)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		local := filepath.Join(t.TempDir(), "session.toml")
+		if err := os.WriteFile(local, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := b.Exec(ctx, h, "mkdir", "-p", filepath.Dir(backend.SessionFile)); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := b.Push(ctx, h, local, backend.SessionFile); err != nil {
+			t.Fatalf("Push: %v", err)
+		}
+
+		back := filepath.Join(t.TempDir(), "back.toml")
+		if err := b.Pull(ctx, h, backend.SessionFile, back); err != nil {
+			t.Fatalf("Pull: %v", err)
+		}
+		raw, err := os.ReadFile(back)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := session.Unmarshal(raw)
+		if err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if got.Name != want.Name || got.TTL != want.TTL || got.CodeMode != want.CodeMode {
+			t.Errorf("round trip = %+v, want %+v", got, want)
+		}
+	})
+}
+
+// The reaper reads TTL from machines that are no longer running. This is the
+// case an in-machine file read over exec cannot serve, and the reason Pull
+// exists as a distinct operation.
+func TestReadSessionRecordFromStoppedMachine(t *testing.T) {
+	eachBackend(t, func(t *testing.T, name string, b backend.Backend) {
+		if controlPlaneOnly(name) {
+			t.Skip("guest boot needs a hypervisor")
+		}
+		stopper, ok := b.(interface {
+			Stop(context.Context, backend.Handle) error
+		})
+		if !ok {
+			t.Skipf("%s cannot stop a machine without destroying it", name)
+		}
+
+		ctx := testCtx(t)
+		spec := specFor(t, name)
+		// Keep, or the backend may delete the machine the moment it stops and
+		// there is nothing left to read from.
+		spec.Keep = true
+		h := mustCreate(t, b, spec)
+
+		data, err := session.Marshal(session.Session{
+			Name: spec.Name, TTL: session.Keep, Created: spec.CreatedAt,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		local := filepath.Join(t.TempDir(), "session.toml")
+		if err := os.WriteFile(local, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := b.Exec(ctx, h, "mkdir", "-p", filepath.Dir(backend.SessionFile)); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.Push(ctx, h, local, backend.SessionFile); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := stopper.Stop(ctx, h); err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+
+		// The machine must still be listed, as stopped rather than absent.
+		machines, err := b.List(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var state string
+		for _, m := range machines {
+			if m.Name == spec.Name {
+				state = m.State
+			}
+		}
+		if state != backend.StateStopped {
+			t.Errorf("stopped machine listed as %q, want %q", state, backend.StateStopped)
+		}
+
+		back := filepath.Join(t.TempDir(), "back.toml")
+		if err := b.Pull(ctx, h, backend.SessionFile, back); err != nil {
+			t.Fatalf("Pull from a stopped machine: %v\n\n"+
+				"The reaper decides whether to destroy machines that are no longer "+
+				"running, so it must be able to read their TTL.", err)
+		}
+		raw, _ := os.ReadFile(back)
+		got, err := session.Unmarshal(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !got.Kept() {
+			t.Errorf("TTL = %q, want keep", got.TTL)
+		}
+	})
+}
+
+// The sentinel is how a session ends itself, and PID 1 must act on it.
+func TestDoneSentinelEndsTheMachine(t *testing.T) {
+	eachBackend(t, func(t *testing.T, name string, b backend.Backend) {
+		if controlPlaneOnly(name) {
+			t.Skip("guest boot needs a hypervisor")
+		}
+		if name != "docker" && name != "k8s" {
+			t.Skipf("%s relies on the reaper rather than PID 1 for this", name)
+		}
+
+		ctx := testCtx(t)
+		spec := specFor(t, name)
+		h := mustCreate(t, b, spec)
+
+		if _, err := b.Exec(ctx, h, "mkdir", "-p", filepath.Dir(backend.DoneSentinel)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := b.Exec(ctx, h, "touch", backend.DoneSentinel); err != nil {
+			t.Fatalf("touch sentinel: %v", err)
+		}
+
+		// PID 1 polls, so give it a little longer than its interval.
+		deadline := time.Now().Add(60 * time.Second)
+		for time.Now().Before(deadline) {
+			machines, err := b.List(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gone := true
+			for _, m := range machines {
+				if m.Name == spec.Name && m.State == backend.StateRunning {
+					gone = false
+				}
+			}
+			if gone {
+				return
+			}
+			time.Sleep(time.Second)
+		}
+		t.Fatalf("machine %q still running 60s after the sentinel appeared", spec.Name)
+	})
+}
+
+// A machine created without Keep must be ephemeral, and one created with it
+// must be durable. `ccvm keep` depends on the difference.
+func TestKeepControlsDurability(t *testing.T) {
+	eachBackend(t, func(t *testing.T, name string, b backend.Backend) {
+		if controlPlaneOnly(name) {
+			t.Skip("guest boot needs a hypervisor")
+		}
+		reporter, ok := b.(backend.EphemeralReporter)
+		if !ok {
+			t.Skipf("%s machines are always durable", name)
+		}
+		ctx := testCtx(t)
+
+		for _, keep := range []bool{false, true} {
+			keep := keep
+			t.Run(map[bool]string{true: "keep", false: "ephemeral"}[keep], func(t *testing.T) {
+				spec := specFor(t, name)
+				spec.Keep = keep
+				h := mustCreate(t, b, spec)
+
+				auto, err := reporter.AutoRemoves(ctx, h)
+				if err != nil {
+					t.Fatalf("AutoRemoves: %v", err)
+				}
+				if auto == keep {
+					t.Errorf("Keep=%v produced auto-remove=%v; they must be opposites", keep, auto)
+				}
+			})
+		}
+	})
+}
+
+// Preflight must not create anything, or `ccvm doctor` has side effects.
+func TestPreflightCreatesNothing(t *testing.T) {
+	eachBackend(t, func(t *testing.T, name string, b backend.Backend) {
+		ctx := testCtx(t)
+		before, err := b.List(ctx)
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if err := b.Preflight(ctx, backend.Spec{
+			Name: uniqueName(t), Profile: "base", Image: itest.Image(),
+		}); err != nil {
+			t.Fatalf("Preflight: %v", err)
+		}
+		after, err := b.List(ctx)
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(after) != len(before) {
+			t.Errorf("Preflight changed the machine count from %d to %d", len(before), len(after))
+		}
+	})
+}
+
+// A missing image must fail with the backend's own message, not a hang.
+func TestPreflightRejectsMissingImage(t *testing.T) {
+	eachBackend(t, func(t *testing.T, name string, b backend.Backend) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		err := b.Preflight(ctx, backend.Spec{
+			Name:    uniqueName(t),
+			Profile: "base",
+			Image:   "ccvm-nonexistent/image:v0",
+		})
+		if err == nil {
+			t.Fatal("Preflight accepted an image that does not exist")
+		}
+		if strings.TrimSpace(err.Error()) == "" {
+			t.Error("Preflight failed with an empty message")
+		}
+	})
+}
