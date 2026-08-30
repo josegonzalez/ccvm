@@ -11,6 +11,7 @@ package itest
 
 import (
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -39,7 +40,7 @@ func Requested() []string {
 		return nil
 	}
 	var out []string
-	for _, f := range strings.Split(raw, ",") {
+	for f := range strings.SplitSeq(raw, ",") {
 		if f = strings.TrimSpace(f); f != "" {
 			out = append(out, f)
 		}
@@ -49,12 +50,7 @@ func Requested() []string {
 
 // IsRequested reports whether name was named in CCVM_ITEST_BACKENDS.
 func IsRequested(name string) bool {
-	for _, n := range Requested() {
-		if n == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(Requested(), name)
 }
 
 // Gate decides whether a backend's integration tests run.

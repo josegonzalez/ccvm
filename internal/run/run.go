@@ -47,8 +47,7 @@ func (e *CmdError) Unwrap() error { return e.Err }
 // ExitCode reports the exit status of a failed command, or -1 when err is not
 // a command failure.
 func ExitCode(err error) int {
-	var ce *CmdError
-	if errors.As(err, &ce) {
+	if ce, ok := errors.AsType[*CmdError](err); ok {
 		return ce.Code
 	}
 	return -1
@@ -57,8 +56,7 @@ func ExitCode(err error) int {
 // Stderr returns the failed command's stderr, or "" when err is not a command
 // failure.
 func Stderr(err error) string {
-	var ce *CmdError
-	if errors.As(err, &ce) {
+	if ce, ok := errors.AsType[*CmdError](err); ok {
 		return ce.Stderr
 	}
 	return ""
@@ -98,8 +96,7 @@ func (e *Exec) Run(ctx context.Context, argv ...string) ([]byte, error) {
 		return stdout.Bytes(), fmt.Errorf("%s: %w", ShellQuote(argv), ctxErr)
 	}
 
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
+	if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 		return stdout.Bytes(), &CmdError{
 			Argv:   argv,
 			Code:   ee.ExitCode(),

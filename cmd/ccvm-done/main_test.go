@@ -72,7 +72,7 @@ func TestTouchSentinelCreatesParentDirectory(t *testing.T) {
 
 func TestTouchSentinelIsIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "destroy")
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if err := touchSentinel(path); err != nil {
 			t.Fatalf("touchSentinel #%d: %v", i+1, err)
 		}

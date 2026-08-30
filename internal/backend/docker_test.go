@@ -188,7 +188,7 @@ func TestDockerCreatePassesResourcesAndEnv(t *testing.T) {
 // become flaky.
 func TestDockerCreateEnvOrderIsStable(t *testing.T) {
 	var first string
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		d, f := newDocker(t)
 		f.On("docker", "run").Stdout("x\n")
 		s := baseSpec()

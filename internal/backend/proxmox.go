@@ -201,7 +201,7 @@ func (p *Proxmox) Create(ctx context.Context, s Spec) (Handle, error) {
 	kind := p.kindFor(s)
 
 	var lastErr error
-	for attempt := 0; attempt < pveCloneAttempts; attempt++ {
+	for range pveCloneAttempts {
 		vmid, err := p.nextFreeID(ctx)
 		if err != nil {
 			return Handle{}, err

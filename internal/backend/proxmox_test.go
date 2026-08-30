@@ -414,8 +414,8 @@ func TestProxmoxSessionRecordSurvivesAStoppedGuest(t *testing.T) {
 			body := make([]byte, r.ContentLength)
 			_, _ = r.Body.Read(body)
 			form := string(body)
-			if i := strings.Index(form, "description="); i >= 0 {
-				stored = form[i+len("description="):]
+			if _, after, ok := strings.Cut(form, "description="); ok {
+				stored = after
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": ""})
 			return
@@ -590,13 +590,6 @@ func TestProxmoxRegistered(t *testing.T) {
 	if _, ok := b.(backend.Stopper); !ok {
 		t.Error("proxmox must implement Stopper")
 	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func errorsIs(err, target error) bool {

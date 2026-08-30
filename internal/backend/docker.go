@@ -148,7 +148,7 @@ func (d *Docker) List(ctx context.Context) ([]Machine, error) {
 	}
 
 	var machines []Machine
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -220,7 +220,7 @@ func labelArgs(s Spec) []string {
 // parseLabels reads docker's comma-separated key=value label rendering.
 func parseLabels(s string) map[string]string {
 	out := map[string]string{}
-	for _, kv := range strings.Split(s, ",") {
+	for kv := range strings.SplitSeq(s, ",") {
 		if k, v, ok := strings.Cut(kv, "="); ok {
 			out[strings.TrimSpace(k)] = v
 		}

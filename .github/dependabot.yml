@@ -1,0 +1,44 @@
+version: 2
+updates:
+  # Go modules. Grouped so a routine x/* bump is one review rather than six,
+  # while anything else arrives on its own and gets looked at.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      golang-x:
+        patterns:
+          - golang.org/x/*
+        update-types:
+          - minor
+          - patch
+
+  # The actions in ci.yml. These pin to major tags that move under us, so an
+  # update here is usually a security fix rather than a feature.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: chore
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # The session image's base. A stale base image is the most likely place for
+  # an unpatched CVE to sit unnoticed, since nothing else here rebuilds it.
+  - package-ecosystem: docker
+    directory: /profiles/base
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: chore

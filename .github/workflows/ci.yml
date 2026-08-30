@@ -32,6 +32,19 @@ jobs:
             echo "::error::gofmt needed on:"; echo "$unformatted"; exit 1
           fi
       - run: go vet ./...
+      # The integration-tagged files are not built by the plain vet, so a
+      # mistake in them would only surface when someone runs the suite.
+      - run: go vet -tags=integration ./...
+      - name: go fix
+        run: |
+          # go fix rewrites in place, so CI runs it and fails on any diff
+          # rather than trying to predict what it would change.
+          go fix ./...
+          if ! git diff --quiet; then
+            echo "::error::go fix has changes to apply; run 'go fix ./...' and commit"
+            git diff --stat
+            exit 1
+          fi
       - uses: golangci/golangci-lint-action@v6
         with:
           version: latest

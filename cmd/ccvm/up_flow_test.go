@@ -548,7 +548,7 @@ func TestUpSuffixesPastTheSecond(t *testing.T) {
 	a, _, _ := newTestApp(t, f)
 	dir := newProject(t, "demo")
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := cmdUp(a, []string{"-detach", dir}); err != nil {
 			t.Fatalf("up %d: %v", i+1, err)
 		}
@@ -665,7 +665,7 @@ func TestUpAllowsConcurrentTokenSessions(t *testing.T) {
 	a, _, _ := newTestApp(t, f)
 	dir := newProject(t, "demo")
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := cmdUp(a, []string{"-detach", dir}); err != nil {
 			t.Fatalf("session %d: %v", i+1, err)
 		}

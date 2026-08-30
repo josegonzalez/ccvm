@@ -190,7 +190,7 @@ const loadAttempts = 5
 
 func load(ctx context.Context, e run.Execer, path string) error {
 	var lastErr error
-	for i := 0; i < loadAttempts; i++ {
+	for range loadAttempts {
 		if _, err := e.Run(ctx, "launchctl", "bootstrap", guiDomain(), path); err == nil {
 			return nil
 		} else {

@@ -9,6 +9,7 @@ package backendtest
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"time"
@@ -237,9 +238,7 @@ func (f *Fake) FilesIn(name string) map[string][]byte {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := map[string][]byte{}
-	for k, v := range f.files[name] {
-		out[k] = v
-	}
+	maps.Copy(out, f.files[name])
 	return out
 }
 

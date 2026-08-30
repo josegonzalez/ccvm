@@ -18,6 +18,14 @@ fmt:
 lint:
 	@test -z "$$(gofmt -l . | tee /dev/stderr)" || (echo "gofmt: files need formatting" && false)
 	$(GO) vet $(PKG)
+	$(GO) vet -tags=integration $(PKG)
+
+# Applies modernizations rather than only reporting them, which is what makes
+# the CI check meaningful: it fails on any diff go fix would produce.
+.PHONY: fix
+fix:
+	$(GO) fix $(PKG)
+	gofmt -w .
 
 .PHONY: test
 test:

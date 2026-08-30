@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -161,12 +162,7 @@ func (f *Fake) ArgAfter(flag string, prefix ...string) (string, bool) {
 // HasArg reports whether the first call matching prefix contains arg. Use it
 // for boolean flags such as --rm, where presence is the whole assertion.
 func (f *Fake) HasArg(arg string, prefix ...string) bool {
-	for _, a := range f.Find(prefix...) {
-		if a == arg {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(f.Find(prefix...), arg)
 }
 
 // Reset clears recorded calls and rule usage, for reuse across subtests.

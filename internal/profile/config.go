@@ -6,6 +6,8 @@
 // earlier shell-sourced format.
 package profile
 
+import "maps"
+
 // Config is a single profile layer, exactly as written in one profile.toml.
 //
 // A zero value means "unset" for every field, which is what lets Merge tell
@@ -70,15 +72,11 @@ func (c *Config) Clone() *Config {
 	out := *c
 	if c.Backend != nil {
 		out.Backend = make(map[string]Backend, len(c.Backend))
-		for k, v := range c.Backend {
-			out.Backend[k] = v
-		}
+		maps.Copy(out.Backend, c.Backend)
 	}
 	if c.Env != nil {
 		out.Env = make(map[string]string, len(c.Env))
-		for k, v := range c.Env {
-			out.Env[k] = v
-		}
+		maps.Copy(out.Env, c.Env)
 	}
 	if c.Provision.Packages != nil {
 		out.Provision.Packages = append([]string(nil), c.Provision.Packages...)

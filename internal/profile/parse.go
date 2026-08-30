@@ -143,8 +143,7 @@ func decodeError(file string, err error) error {
 			Snippet: sme.String(),
 		}
 	}
-	var de *toml.DecodeError
-	if errors.As(err, &de) {
+	if de, ok := errors.AsType[*toml.DecodeError](err); ok {
 		row, col := de.Position()
 		return &ParseError{
 			File:    file,

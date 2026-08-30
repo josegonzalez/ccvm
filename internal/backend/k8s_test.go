@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -365,12 +366,7 @@ func TestK8sRegistered(t *testing.T) {
 }
 
 func containsArg(argv []string, want string) bool {
-	for _, a := range argv {
-		if a == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(argv, want)
 }
 
 var _ = os.Getenv

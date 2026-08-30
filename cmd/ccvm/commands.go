@@ -88,7 +88,6 @@ func (a *app) listAll(includeUnowned bool) ([]backend.Machine, error) {
 		names   = a.backendNames()
 	)
 	for i, name := range names {
-		i, name := i, name
 		g.Go(func() error {
 			b := a.backends[name]
 			ctx, cancel := context.WithTimeout(a.ctx, backendTimeout)
@@ -902,8 +901,8 @@ func (a *app) credsImport(machine string) error {
 }
 
 func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
+	if before, _, ok := strings.Cut(s, "\n"); ok {
+		return before
 	}
 	return s
 }

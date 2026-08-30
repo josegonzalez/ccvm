@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/josegonzalez/ccvm/internal/backend"
@@ -51,10 +52,8 @@ func Check(mode, backendName string) error {
 	if !ok {
 		return fmt.Errorf("unknown code mode %q; try %s", mode, strings.Join(Modes(), ", "))
 	}
-	for _, b := range backends {
-		if b == backendName {
-			return nil
-		}
+	if slices.Contains(backends, backendName) {
+		return nil
 	}
 	return fmt.Errorf("--code %s is not available on the %s backend; it supports %s",
 		mode, backendName, strings.Join(ModesFor(backendName), ", "))
@@ -67,11 +66,8 @@ func Modes() []string { return []string{Mount, Rsync, Git} }
 func ModesFor(backendName string) []string {
 	var out []string
 	for _, mode := range Modes() {
-		for _, b := range Supported[mode] {
-			if b == backendName {
-				out = append(out, mode)
-				break
-			}
+		if slices.Contains(Supported[mode], backendName) {
+			out = append(out, mode)
 		}
 	}
 	return out

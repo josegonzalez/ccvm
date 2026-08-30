@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -159,8 +160,8 @@ func cmdUp(a *app, args []string) error {
 	// than leaving a half-created machine and a stale ssh entry.
 	var rollback []func()
 	unwind := func() {
-		for i := len(rollback) - 1; i >= 0; i-- {
-			rollback[i]()
+		for _, r := range slices.Backward(rollback) {
+			r()
 		}
 	}
 
