@@ -387,7 +387,11 @@ func cmdProfiles(a *app, args []string) error {
 		// parsing: Go's flag package stops at the first non-flag argument and
 		// would otherwise hand the name back as an unparsed positional.
 		if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-			return fmt.Errorf("usage: ccvm profiles build <name> [--backend B]")
+			// Echo what arrived. An identical message for "no name given" and
+			// "flags misparsed" makes a stale binary indistinguishable from a
+			// mistake in the command.
+			return fmt.Errorf("usage: ccvm profiles build <name> [--backend B]\n"+
+				"got: ccvm profiles build %s", strings.Join(args, " "))
 		}
 		name := args[0]
 		fs := newFlags("profiles build", a)

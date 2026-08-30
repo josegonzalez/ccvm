@@ -2,6 +2,11 @@ GO      ?= go
 PKG     := ./...
 DIST    := dist
 
+# Stamped into the binary so `ccvm version` answers "is this build current?".
+# A stale binary is otherwise indistinguishable from a bug.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -X main.version=$(VERSION)
+
 .PHONY: all
 all: lint test
 
@@ -42,11 +47,12 @@ itest-local:
 .PHONY: build
 build:
 	mkdir -p $(DIST)
-	$(GO) build -o $(DIST)/ccvm ./cmd/ccvm
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(DIST)/ccvm ./cmd/ccvm
 	GOOS=linux GOARCH=amd64 $(GO) build -o $(DIST)/ccvm-done-linux-amd64 ./cmd/ccvm-done
 	GOOS=linux GOARCH=arm64 $(GO) build -o $(DIST)/ccvm-done-linux-arm64 ./cmd/ccvm-done
 	GOOS=linux GOARCH=amd64 $(GO) build -o $(DIST)/ccvm-init-linux-amd64 ./cmd/ccvm-init
 	GOOS=linux GOARCH=arm64 $(GO) build -o $(DIST)/ccvm-init-linux-arm64 ./cmd/ccvm-init
+	@echo "built $(DIST)/ccvm $(VERSION)"
 
 # The image build needs the guest binaries staged into the context first: they
 # are compiled from this repo rather than fetched.
