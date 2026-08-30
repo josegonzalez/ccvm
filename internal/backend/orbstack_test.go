@@ -18,6 +18,8 @@ func newOrbstack(t *testing.T) (*backend.Orbstack, *run.Fake) {
 func orbSpec() backend.Spec {
 	s := baseSpec()
 	s.Image = "ccvm-base" // a template machine, not a registry reference
+	// Mount mode adds a config step; tests that care set it explicitly.
+	s.CodeMode = "git"
 	return s
 }
 
@@ -284,5 +286,78 @@ func TestOrbstackListExcludesTemplates(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Name != "cc-foo" {
 		t.Errorf("List = %v, want only the session; a template must not be offered for destruction", got)
+	}
+}
+
+// An isolated machine has no view of the Mac, so a mount must be granted
+// explicitly — and a clone cannot take --mount, so it is configured between
+// cloning and starting. Without this, --code mount silently produced an empty
+// /work.
+func TestOrbstackCreateAttachesTheProjectForMountMode(t *testing.T) {
+	o, f := newOrbstack(t)
+	f.On("orbctl", "clone").Stdout("")
+	f.On("orbctl", "config", "add").Stdout("")
+
+	s := orbSpec()
+	s.CodeMode = "mount"
+	if _, err := o.Create(context.Background(), s); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	call := strings.Join(f.Find("orbctl", "config", "add"), " ")
+	if !strings.Contains(call, "machine.cc-foo.mounts") {
+		t.Errorf("call = %q, want the machine's mount list", call)
+	}
+	if !strings.Contains(call, "/Users/j/src/foo:/work") {
+		t.Errorf("call = %q, want the project attached at the work directory", call)
+	}
+}
+
+// The mount has to be configured before the machine first starts.
+func TestOrbstackMountIsConfiguredBeforeStart(t *testing.T) {
+	o, f := newOrbstack(t)
+	f.On("orbctl", "clone").Stdout("")
+	f.On("orbctl", "config", "add").Stdout("")
+	f.On("orbctl", "start").Stdout("")
+
+	s := orbSpec()
+	s.CodeMode = "mount"
+	h, err := o.Create(context.Background(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Start(context.Background(), h); err != nil {
+		t.Fatal(err)
+	}
+
+	var configAt, startAt = -1, -1
+	for i, c := range f.Calls() {
+		joined := strings.Join(c, " ")
+		if strings.Contains(joined, "config add") && configAt == -1 {
+			configAt = i
+		}
+		if strings.Contains(joined, "orbctl start") && startAt == -1 {
+			startAt = i
+		}
+	}
+	if configAt == -1 || startAt == -1 || configAt > startAt {
+		t.Errorf("mount configured after start: %v", f.Lines())
+	}
+}
+
+func TestOrbstackCreateSkipsMountForOtherModes(t *testing.T) {
+	for _, mode := range []string{"git", "rsync"} {
+		t.Run(mode, func(t *testing.T) {
+			o, f := newOrbstack(t)
+			f.On("orbctl", "clone").Stdout("")
+
+			s := orbSpec()
+			s.CodeMode = mode
+			if _, err := o.Create(context.Background(), s); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if f.Ran("orbctl", "config", "add") {
+				t.Errorf("%s mode attached a host directory", mode)
+			}
+		})
 	}
 }

@@ -11,21 +11,12 @@ import (
 
 	"github.com/josegonzalez/ccvm/internal/attach"
 	"github.com/josegonzalez/ccvm/internal/backend"
+	"github.com/josegonzalez/ccvm/internal/code"
 	"github.com/josegonzalez/ccvm/internal/creds"
 	"github.com/josegonzalez/ccvm/internal/profile"
 	"github.com/josegonzalez/ccvm/internal/session"
 	"github.com/josegonzalez/ccvm/internal/sshcfg"
 )
-
-// validCodeModes maps each mode to the backends that can serve it. k8s has no
-// host to mount from, so asking for one there is a preflight failure rather
-// than a surprise later.
-var validCodeModes = map[string][]string{
-	"mount": {"docker", "orbstack", "proxmox"},
-	"rsync": {"docker", "orbstack", "proxmox", "k8s"},
-	"git":   {"docker", "orbstack", "proxmox", "k8s"},
-	"sshfs": {"proxmox"},
-}
 
 func cmdUp(a *app, args []string) error {
 	fs := newFlags("up", a)
@@ -63,8 +54,8 @@ func cmdUp(a *app, args []string) error {
 		return err
 	}
 
-	mode := firstNonEmpty(*codeMode, cfg.Defaults.CodeMode, "mount")
-	if err := checkCodeMode(mode, chosen); err != nil {
+	mode := firstNonEmpty(*codeMode, cfg.Defaults.CodeMode, code.DefaultFor(chosen))
+	if err := code.Check(mode, chosen); err != nil {
 		return err
 	}
 	// --vm is proxmox-only. A silently ignored flag is worse than a refusal:
@@ -230,6 +221,26 @@ func cmdUp(a *app, args []string) error {
 		}
 	}
 
+	codeOpts := code.Options{
+		Mode:         mode,
+		Project:      projectDir,
+		WorkDir:      spec.WorkDir,
+		Backend:      b,
+		Handle:       handle,
+		Runner:       a.runner,
+		SSHTarget:    b.SSHTarget(handle),
+		IdentityFile: a.sshKey.Private,
+	}
+	if err := code.Materialize(a.ctx, codeOpts); err != nil {
+		unwind()
+		return &Fault{
+			Backend: chosen,
+			Step:    fmt.Sprintf("put the code in place (--code %s)", mode),
+			Cause:   err,
+			Cleanup: "machine destroyed; nothing left running.",
+		}
+	}
+
 	if err := a.writeSessionRecord(b, handle, spec, cred); err != nil {
 		unwind()
 		return &Fault{
@@ -257,6 +268,14 @@ func cmdUp(a *app, args []string) error {
 	}
 	if err := attach.Run(opts); err != nil {
 		return err
+	}
+
+	// Return changes before anything is destroyed. A sync that runs after the
+	// machine is gone returns nothing.
+	if err := code.SyncBack(a.ctx, codeOpts); err != nil {
+		fmt.Fprintf(a.err, "ccvm: %v\n", err)
+		return fmt.Errorf("refusing to destroy %s while its changes are unsynced; "+
+			"recover them with `ccvm ssh %s`", spec.Name, spec.Name)
 	}
 
 	// The session ended. Whether the machine follows is the session record's
@@ -656,33 +675,6 @@ func imageForBackend(cfg *profile.Config, backendName string, useVM bool) (strin
 		}
 		return b.Image, nil
 	}
-}
-
-func checkCodeMode(mode, backendName string) error {
-	allowed, ok := validCodeModes[mode]
-	if !ok {
-		return fmt.Errorf("unknown code mode %q; try mount, rsync, git, or sshfs", mode)
-	}
-	for _, b := range allowed {
-		if b == backendName {
-			return nil
-		}
-	}
-	return fmt.Errorf("--code %s is not available on the %s backend; it supports %s",
-		mode, backendName, strings.Join(modesFor(backendName), ", "))
-}
-
-func modesFor(backendName string) []string {
-	var out []string
-	for _, mode := range []string{"mount", "rsync", "git", "sshfs"} {
-		for _, b := range validCodeModes[mode] {
-			if b == backendName {
-				out = append(out, mode)
-				break
-			}
-		}
-	}
-	return out
 }
 
 // needsPort reports whether a backend reaches sshd through a loopback port

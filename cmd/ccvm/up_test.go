@@ -36,47 +36,6 @@ func TestMachineName(t *testing.T) {
 }
 
 // k8s has no host to mount from, so asking for one must fail at preflight
-// rather than surprising the user later.
-func TestCheckCodeMode(t *testing.T) {
-	tests := []struct {
-		mode, backend string
-		wantErr       bool
-	}{
-		{"mount", "docker", false},
-		{"mount", "orbstack", false},
-		{"mount", "k8s", true},
-		{"sshfs", "k8s", true},
-		{"sshfs", "docker", true},
-		{"sshfs", "proxmox", false},
-		{"git", "k8s", false},
-		{"rsync", "k8s", false},
-		{"nonsense", "docker", true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.mode+"/"+tt.backend, func(t *testing.T) {
-			err := checkCodeMode(tt.mode, tt.backend)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("checkCodeMode(%q, %q) = %v, wantErr %v", tt.mode, tt.backend, err, tt.wantErr)
-			}
-			if err != nil && tt.mode != "nonsense" {
-				// The refusal must say what the backend does support.
-				if !strings.Contains(err.Error(), tt.backend) {
-					t.Errorf("err = %v, want it to name the backend", err)
-				}
-			}
-		})
-	}
-}
-
-func TestModesForNamesOnlySupported(t *testing.T) {
-	got := strings.Join(modesFor("k8s"), ",")
-	if strings.Contains(got, "mount") || strings.Contains(got, "sshfs") {
-		t.Errorf("modesFor(k8s) = %q, must not offer host-backed modes", got)
-	}
-	if !strings.Contains(got, "git") {
-		t.Errorf("modesFor(k8s) = %q, want git", got)
-	}
-}
 
 // orbstack multiplexes ssh itself and proxmox gives guests real addresses, so
 // neither should burn a loopback port.

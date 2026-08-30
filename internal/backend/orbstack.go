@@ -87,7 +87,20 @@ func (o *Orbstack) Create(ctx context.Context, s Spec) (Handle, error) {
 	if _, err := o.Runner.Run(ctx, o.bin(), "clone", s.Image, s.Name); err != nil {
 		return Handle{}, fmt.Errorf("clone %s to %s: %w", s.Image, s.Name, err)
 	}
-	return Handle{Backend: "orbstack", Name: s.Name, ID: s.Name}, nil
+	h := Handle{Backend: "orbstack", Name: s.Name, ID: s.Name}
+
+	// An isolated machine has no view of the Mac, so a bind mount has to be
+	// granted explicitly. It is configured here rather than at create time
+	// because sessions are cloned from a template, and a clone cannot take the
+	// --mount flag; the setting only applies once, before the first start.
+	if s.CodeMode == "mount" && s.Project != "" {
+		mount := fmt.Sprintf("%s:%s", strings.TrimRight(s.Project, "/"), s.WorkDir)
+		if _, err := o.Runner.Run(ctx, o.bin(), "config", "add",
+			"machine."+s.Name+".mounts", mount); err != nil {
+			return h, fmt.Errorf("attach %s to %s: %w", s.Project, s.WorkDir, err)
+		}
+	}
+	return h, nil
 }
 
 func (o *Orbstack) Start(ctx context.Context, h Handle) error {

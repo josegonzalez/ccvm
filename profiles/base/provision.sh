@@ -9,7 +9,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends \
-    ca-certificates curl git openssh-server tmux ripgrep jq \
+    ca-certificates curl git openssh-server tmux ripgrep jq rsync \
     build-essential procps less sudo
 
 # Claude Code. Pinned by the caller when CLAUDE_VERSION is set, so a template

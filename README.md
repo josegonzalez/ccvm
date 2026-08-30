@@ -37,6 +37,8 @@ make image          # the base session image
 ```
 ccvm up                      # a machine for the current directory
 ccvm up ~/src/foo --keep     # one that survives the session
+ccvm up --detach             # provision and return, instead of entering
+ccvm up --code rsync         # copy the tree in, and back out on teardown
 ccvm ls                      # what is running
 ccvm ssh cc-foo              # a shell in it
 ccvm attach cc-foo           # back to its Claude session
@@ -50,6 +52,26 @@ From inside a session, `ccvm-done` ends it and destroys the machine.
 
 `--verbose` prints every backend command verbatim, shell-quoted so you can
 re-run it.
+
+## Getting the code in
+
+`--code` picks how a project reaches the machine. The default is the cheapest
+mode that still carries uncommitted work.
+
+| Mode | What it does | Backends |
+| --- | --- | --- |
+| `mount` | The host directory is attached live. Nothing is copied. | docker, orbstack, proxmox |
+| `rsync` | Copied in at spawn and back out when the session ends. | all |
+| `git` | Cloned from origin at the branch you have checked out. Uncommitted work stays behind. | all |
+
+kubernetes has no host filesystem to reach, so `mount` there is refused rather
+than silently empty.
+
+Under `rsync` the machine holds the only copy of anything edited inside it, so
+`ccvm rm` returns changes before destroying and refuses if it cannot.
+`ccvm rm --force` discards them deliberately. Heavy directories — `node_modules`,
+`.venv`, build output — are never copied, on top of the project's own
+`.gitignore`.
 
 ## Profiles
 

@@ -15,6 +15,7 @@ import (
 
 	"github.com/josegonzalez/ccvm/internal/attach"
 	"github.com/josegonzalez/ccvm/internal/backend"
+	"github.com/josegonzalez/ccvm/internal/code"
 	"github.com/josegonzalez/ccvm/internal/creds"
 	"github.com/josegonzalez/ccvm/internal/profile"
 	"github.com/josegonzalez/ccvm/internal/session"
@@ -163,8 +164,14 @@ func (a *app) readSession(m backend.Machine) (session.Session, error) {
 // ---------------------------------------------------------------- rm / keep
 
 func cmdRm(a *app, args []string) error {
+	fs := newFlags("rm", a)
+	force := fs.Bool("force", false, "destroy even if changes cannot be returned to the host")
+	if err := fs.Parse(args); err != nil {
+		return errUsage
+	}
+	args = fs.Args()
 	if len(args) == 0 {
-		return fmt.Errorf("usage: ccvm rm <name>...")
+		return fmt.Errorf("usage: ccvm rm [--force] <name>...")
 	}
 	machines, err := a.listAll(true)
 	if err != nil {
@@ -187,6 +194,20 @@ func cmdRm(a *app, args []string) error {
 		if err != nil {
 			return err
 		}
+
+		// Under rsync the machine holds the only copy of any edit made inside
+		// it. Destroying without returning those is silent data loss, so it is
+		// refused rather than warned about.
+		if err := a.syncBack(b, m); err != nil {
+			if !*force {
+				fmt.Fprintf(a.err, "ccvm: %v\n", err)
+				fmt.Fprintf(a.err, "      Recover them with `ccvm ssh %s`, or discard with `ccvm rm --force %s`\n", name, name)
+				failed = append(failed, name)
+				continue
+			}
+			fmt.Fprintf(a.err, "ccvm: discarding unsynced changes in %s: %v\n", name, err)
+		}
+
 		if err := b.Destroy(a.ctx, m.Handle()); err != nil {
 			fmt.Fprintf(a.err, "ccvm: destroy %s: %v\n", name, err)
 			failed = append(failed, name)
@@ -232,6 +253,35 @@ func cmdKeep(a *app, args []string) error {
 		return nil
 	}
 	return fmt.Errorf("no machine named %q", name)
+}
+
+// syncBack returns a machine's changes to the host, for the modes where the
+// machine holds the only copy.
+//
+// The session record carries the mode and the project path, so this works on a
+// machine this process did not create — which is the case that matters, since
+// a detached session is destroyed by a later `ccvm rm`.
+func (a *app) syncBack(b backend.Backend, m backend.Machine) error {
+	rec, err := a.readSession(m)
+	if err != nil {
+		// No record means no way to know what to sync or where. Treating that
+		// as "nothing to do" is right: a machine without one was not created
+		// by a version of ccvm that tracks this.
+		return nil
+	}
+	if rec.CodeMode != code.Rsync || rec.Project == "" {
+		return nil
+	}
+	return code.SyncBack(a.ctx, code.Options{
+		Mode:         rec.CodeMode,
+		Project:      rec.Project,
+		WorkDir:      rec.WorkDir,
+		Backend:      b,
+		Handle:       m.Handle(),
+		Runner:       a.runner,
+		SSHTarget:    m.SSH,
+		IdentityFile: a.sshKey.Private,
+	})
 }
 
 // warnIfEphemeral reports the limit of what `ccvm keep` can promise.
@@ -312,6 +362,7 @@ func cmdGC(a *app, args []string) error {
 		if err != nil {
 			return err
 		}
+
 		if err := b.Destroy(a.ctx, m.Handle()); err != nil {
 			fmt.Fprintf(a.err, "ccvm: destroy %s: %v\n", m.Name, err)
 			continue
