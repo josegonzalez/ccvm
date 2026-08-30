@@ -3,3 +3,6 @@
 /tmp/
 .DS_Store
 /coverage.shipped.out
+/ccvm
+/ccvm-done
+/ccvm-init
