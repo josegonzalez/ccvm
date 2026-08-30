@@ -1,0 +1,165 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Tier-2 proxmox exists to catch upstream drift, which arrives on its own
+    # schedule rather than with our commits.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  # Coverage floor is a regression alarm, not a target. The pure packages sit
+  # well above it unassisted.
+  COVERAGE_MIN: "75"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt needed on:"; echo "$unformatted"; exit 1
+          fi
+      - run: go vet ./...
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+  test:
+    # macOS is not optional: ccvm manipulates a Mac's SSH config, ports, and
+    # local state, and path handling differs.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      - name: Coverage gate
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {print substr($3, 1, length($3)-1)}')
+          echo "total coverage: ${total}%"
+          awk -v t="$total" -v m="$COVERAGE_MIN" 'BEGIN {
+            if (t + 0 < m + 0) {
+              printf "::error::coverage %s%% is below %s%%\n", t, m
+              exit 1
+            }
+          }'
+
+  build:
+    # The guest binaries are the ones most likely to break unnoticed, since
+    # nothing on the Mac exercises them.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: dist/
+          retention-days: 7
+
+  integration-docker:
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build the base profile image
+        run: |
+          if [ -f profiles/base/Dockerfile ]; then
+            docker build -t ccvm/base:ci profiles/base
+          else
+            echo "no base image yet; integration suite will report what it cannot run"
+          fi
+      - name: Integration tests
+        env:
+          # Naming a backend here makes it required. The suite fails rather
+          # than skips when it is unavailable — a suite that silently skips
+          # reports green while testing nothing.
+          CCVM_ITEST_BACKENDS: docker
+          CCVM_ITEST_IMAGE: ccvm/base:ci
+        run: go test -tags=integration -count=1 ./...
+
+  integration-k8s:
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: ccvm-ci
+      - name: Load the base image into kind
+        run: |
+          if [ -f profiles/base/Dockerfile ]; then
+            docker build -t ccvm/base:ci profiles/base
+            kind load docker-image ccvm/base:ci --name ccvm-ci
+          fi
+      - name: Integration tests
+        env:
+          CCVM_ITEST_BACKENDS: k8s
+          CCVM_ITEST_IMAGE: ccvm/base:ci
+        run: go test -tags=integration -count=1 ./...
+
+  integration-proxmox:
+    # Hosted runners have no nested virtualization, so guest boot is out of
+    # reach. A containerized PVE still exercises the real control plane, which
+    # is what frozen httptest fixtures cannot: they never notice an upstream
+    # API change.
+    #
+    # Non-gating on purpose. This depends on an unofficial third-party image,
+    # and a flaky required check is one you learn to ignore.
+    needs: [test]
+    if: github.event_name == 'schedule' || contains(github.event.head_commit.message, '[proxmox]')
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Start containerized Proxmox VE
+        run: |
+          # TODO: pin by digest before relying on this.
+          docker run -d --name pve --privileged \
+            -p 8006:8006 ghcr.io/longqt-sea/proxmox-ve:latest
+          for i in $(seq 1 60); do
+            if curl -sk https://localhost:8006/api2/json/version >/dev/null; then
+              echo "pve up after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "::warning::containerized PVE did not come up"; exit 1
+      - name: Integration tests
+        env:
+          CCVM_ITEST_BACKENDS: proxmox
+          CCVM_ITEST_PROXMOX_URL: https://localhost:8006
+          # Guest boot needs a real hypervisor; this tier covers the API only.
+          CCVM_ITEST_PROXMOX_CONTROL_PLANE_ONLY: "1"
+        run: go test -tags=integration -count=1 ./...
+      - if: always()
+        run: docker rm -f pve || true
