@@ -1,8 +1,10 @@
 #!/bin/sh
-# Provisions a ccvm base machine. Runs as root inside the guest.
+# Bakes a ccvm base image. Runs as root inside the guest, once, at build time.
 #
-# This is the same script `ccvm profiles build` runs to bake a template and that
-# spawn-time provisioning runs on a live machine, so it has to be idempotent.
+# Deliberately named build.sh rather than provision.sh: a provision.sh runs on
+# every spawn, and re-running a full package install on a machine that already
+# has everything is slow at best. Build-time work belongs here; per-session work
+# belongs in a profile's provision.sh.
 set -eu
 
 export DEBIAN_FRONTEND=noninteractive

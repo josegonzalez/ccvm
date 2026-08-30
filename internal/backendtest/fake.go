@@ -9,6 +9,7 @@ package backendtest
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/josegonzalez/ccvm/internal/backend"
@@ -28,12 +29,15 @@ type Fake struct {
 	execCalls [][]string
 
 	// Failures let a test script a specific operation failing.
-	CreateErr   error
-	StartErr    error
-	WaitErr     error
-	ListErr     error
-	DestroyErr  error
-	PushErr     error
+	CreateErr  error
+	StartErr   error
+	WaitErr    error
+	ListErr    error
+	DestroyErr error
+	PushErr    error
+	// ExecErrOn makes any Exec whose argv contains this string fail, for
+	// testing what happens partway through a sequence.
+	ExecErrOn   string
 	AutoRemove  bool
 	Destroyed   []string
 	CreateCalls int
@@ -116,6 +120,13 @@ func (f *Fake) Exec(ctx context.Context, h backend.Handle, argv ...string) ([]by
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.execCalls = append(f.execCalls, append([]string(nil), argv...))
+	if f.ExecErrOn != "" {
+		for _, a := range argv {
+			if strings.Contains(a, f.ExecErrOn) {
+				return nil, fmt.Errorf("exec %v: scripted failure", argv)
+			}
+		}
+	}
 	if len(argv) == 3 && argv[0] == "test" && argv[1] == "-f" {
 		if _, ok := f.files[h.Name][argv[2]]; ok {
 			return nil, nil
@@ -206,6 +217,18 @@ func (f *Fake) SetState(name, state string) {
 	if m, ok := f.machines[name]; ok {
 		m.State = state
 	}
+}
+
+// FilesIn returns every file written into a machine, for assertions that do
+// not know the exact path.
+func (f *Fake) FilesIn(name string) map[string][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string][]byte{}
+	for k, v := range f.files[name] {
+		out[k] = v
+	}
+	return out
 }
 
 // FileIn returns a file's contents from inside a machine.

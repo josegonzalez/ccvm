@@ -90,9 +90,9 @@ func (a *app) buildOrbstackTemplate(name string, cfg *profile.Config) error {
 	}
 	defer cleanup()
 
-	script := filepath.Join(dir, "provision.sh")
+	script := filepath.Join(dir, "build.sh")
 	if _, err := os.Stat(script); err != nil {
-		return fmt.Errorf("profile %q has no provision.sh, so there is nothing to install", name)
+		return fmt.Errorf("profile %q has no build.sh, so there is nothing to bake into a template", name)
 	}
 
 	// A leftover template from a failed build would be reused silently.
@@ -111,7 +111,7 @@ func (a *app) buildOrbstackTemplate(name string, cfg *profile.Config) error {
 	// Staged under /etc/ccvm rather than /tmp. A guest's /tmp is a per-boot
 	// tmpfs that orbctl push writes into a different view of: the push reports
 	// success and the file is not there, which fails later and confusingly.
-	const staged = "/etc/ccvm/provision.sh"
+	const staged = "/etc/ccvm/build.sh"
 	if _, err := a.runner.Run(a.ctx, "orbctl", "run", "-m", template, "-u", "root",
 		"mkdir", "-p", "/etc/ccvm"); err != nil {
 		return err

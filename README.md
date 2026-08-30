@@ -53,6 +53,29 @@ From inside a session, `ccvm-done` ends it and destroys the machine.
 `--verbose` prints every backend command verbatim, shell-quoted so you can
 re-run it.
 
+## Provisioning
+
+A machine can be prepared beyond its image, in the guest, before Claude starts.
+Layers run in order, each able to rely on the last:
+
+1. `provision.sh` from the profile chain, parents first
+2. `[provision].packages` from the resolved profile
+3. `~/.config/ccvm/provision.sh`, your own preferences on every machine
+4. `<project>/.ccvm/provision.sh`, committed so anyone working on that repo gets it
+5. `--install pkg,pkg`, a one-off that always wins
+
+A failing layer aborts and destroys the machine. A half-provisioned session
+fails later for reasons that no longer point at the cause.
+
+A profile's `build.sh` is different: it bakes an image once, via
+`ccvm profiles build`. Build-time work belongs there, since running a full
+package install on every spawn is slow at best. Prototype in a `provision.sh`,
+promote to `build.sh` once it stabilizes.
+
+The project hook runs arbitrary code in the guest — that is the point, in a
+machine that is already disposable. It is the counterpart to a repository not
+being allowed to choose the image it runs on, which is enforced on the host.
+
 ## Getting the code in
 
 `--code` picks how a project reaches the machine. The default is the cheapest

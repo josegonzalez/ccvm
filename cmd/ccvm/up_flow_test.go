@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/josegonzalez/ccvm/internal/attach"
 	"github.com/josegonzalez/ccvm/internal/backend"
 	"github.com/josegonzalez/ccvm/internal/backendtest"
 	"github.com/josegonzalez/ccvm/internal/creds"
@@ -768,5 +769,137 @@ func TestUpNameOverride(t *testing.T) {
 	machines, _ := f.List(a.ctx)
 	if len(machines) != 1 || machines[0].Name != "cc-broker" {
 		t.Errorf("machines = %v, want the overridden name", machines)
+	}
+}
+
+// --install was parsed, shown in --dry-run, and then ignored.
+func TestUpRunsInstallPackages(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	if err := cmdUp(a, []string{"-detach", "-install", "ripgrep,jq", dir}); err != nil {
+		t.Fatalf("cmdUp: %v", err)
+	}
+	staged := false
+	for path, data := range f.FilesIn("cc-demo") {
+		if strings.Contains(path, "provision.d") && strings.Contains(string(data), "ripgrep") {
+			staged = true
+		}
+	}
+	if !staged {
+		t.Error("--install did not reach the machine")
+	}
+}
+
+// A project's hook runs in the guest, which is the counterpart to a repository
+// not being allowed to choose the image on the host.
+func TestUpRunsTheProjectHook(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	hookDir := filepath.Join(dir, ".ccvm")
+	if err := os.MkdirAll(hookDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hookDir, "provision.sh"),
+		[]byte("echo from-the-project\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cmdUp(a, []string{"-detach", dir}); err != nil {
+		t.Fatalf("cmdUp: %v", err)
+	}
+	found := false
+	for path, data := range f.FilesIn("cc-demo") {
+		if strings.Contains(path, "provision.d") && strings.Contains(string(data), "from-the-project") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the project's hook did not run")
+	}
+}
+
+// A half-provisioned machine fails later for reasons that no longer point at
+// the cause, so a failing hook aborts and tears down.
+func TestUpTearsDownWhenProvisioningFails(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	f.ExecErrOn = "provision.d"
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	hookDir := filepath.Join(dir, ".ccvm")
+	if err := os.MkdirAll(hookDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hookDir, "provision.sh"), []byte("exit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := cmdUp(a, []string{"-detach", dir})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if len(f.Destroyed) != 1 {
+		t.Errorf("Destroyed = %v, want the half-provisioned machine cleaned up", f.Destroyed)
+	}
+	if !strings.Contains(err.Error(), "provision") {
+		t.Errorf("err = %v, want it to name the step", err)
+	}
+}
+
+// Provisioning now costs real time, so --dry-run has to show what would run.
+func TestUpDryRunListsProvisioningLayers(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, out, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	if err := cmdUp(a, []string{"-dry-run", "-install", "ripgrep", dir}); err != nil {
+		t.Fatalf("cmdUp: %v", err)
+	}
+	if !strings.Contains(out.String(), "--install") {
+		t.Errorf("out = %q, want the provisioning layers listed", out.String())
+	}
+	if f.CreateCalls != 0 {
+		t.Error("--dry-run created a machine")
+	}
+}
+
+// --yolo was parsed and shown in --dry-run; whether it reached the claude
+// process is invisible once ssh and tmux are in the way.
+func TestAttachOptionsCarryYoloIntoTheClaudeCommand(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	spec := backend.Spec{Name: "cc-demo", WorkDir: "/work"}
+
+	opts := a.attachOptions("cc-demo", spec, creds.Source{Mode: creds.Token}, true)
+	cmd := attach.ClaudeCommand(opts)
+	if !strings.Contains(cmd, "--dangerously-skip-permissions") {
+		t.Errorf("claude command = %q, want the flag passed", cmd)
+	}
+
+	opts = a.attachOptions("cc-demo", spec, creds.Source{Mode: creds.Token}, false)
+	if strings.Contains(attach.ClaudeCommand(opts), "dangerously") {
+		t.Error("the flag was passed without --yolo")
+	}
+}
+
+// Remote Control only works on a login; asking for it on the token path would
+// produce a session that silently never connects.
+func TestAttachOptionsEnableRemoteControlOnlyForALogin(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	spec := backend.Spec{Name: "cc-demo", WorkDir: "/work"}
+
+	tokenCmd := attach.ClaudeCommand(a.attachOptions("t", spec, creds.Source{Mode: creds.Token}, false))
+	if strings.Contains(tokenCmd, "--remote-control") {
+		t.Errorf("token session asked for Remote Control: %q", tokenCmd)
+	}
+
+	loginCmd := attach.ClaudeCommand(a.attachOptions("t", spec, creds.Source{Mode: creds.Login}, false))
+	if !strings.Contains(loginCmd, "--remote-control cc-demo") {
+		t.Errorf("login session = %q, want a named Remote Control session", loginCmd)
 	}
 }

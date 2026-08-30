@@ -17,6 +17,14 @@ type Source interface {
 	Load(name string) (*Config, error)
 }
 
+// ScriptSource supplies a profile's auxiliary files, such as provision.sh.
+//
+// It is separate from Source because resolution only needs the config, and a
+// caller that never provisions should not have to supply file access.
+type ScriptSource interface {
+	Script(profile, name string) ([]byte, error)
+}
+
 // ErrNotFound is returned by a Source for an unknown profile name, so Resolve
 // can report a missing parent differently from an unreadable one.
 var ErrNotFound = errors.New("profile not found")
@@ -25,6 +33,12 @@ var ErrNotFound = errors.New("profile not found")
 // shipped profiles/ directory is read. Taking an fs.FS keeps resolution
 // testable without touching disk.
 type FSSource struct{ FS fs.FS }
+
+// Script reads a file from a profile's directory. A missing file is reported
+// as fs.ErrNotExist, which callers treat as "this profile has no hook".
+func (s FSSource) Script(profile, name string) ([]byte, error) {
+	return fs.ReadFile(s.FS, path.Join(profile, name))
+}
 
 func (s FSSource) Load(name string) (*Config, error) {
 	file := path.Join(name, "profile.toml")
@@ -49,6 +63,31 @@ func Builtin() *Config {
 		},
 		Resources: Resources{CPUs: 2, Memory: "4G", Disk: "16G"},
 	}
+}
+
+// Names returns the profile and its ancestors, root first.
+//
+// Provisioning runs parents before children, so a child's script can rely on
+// what its parent installed.
+func Names(name string, src Source) ([]string, error) {
+	var (
+		order []string
+		seen  = map[string]bool{}
+	)
+	for cur := name; cur != ""; {
+		if seen[cur] {
+			return nil, fmt.Errorf("profile %q: extends cycle", name)
+		}
+		seen[cur] = true
+		order = append([]string{cur}, order...)
+
+		c, err := src.Load(cur)
+		if err != nil {
+			return nil, err
+		}
+		cur = c.Extends
+	}
+	return order, nil
 }
 
 // Resolve produces the effective config for a named profile: built-in defaults,

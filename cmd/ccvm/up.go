@@ -14,6 +14,7 @@ import (
 	"github.com/josegonzalez/ccvm/internal/code"
 	"github.com/josegonzalez/ccvm/internal/creds"
 	"github.com/josegonzalez/ccvm/internal/profile"
+	"github.com/josegonzalez/ccvm/internal/provision"
 	"github.com/josegonzalez/ccvm/internal/session"
 	"github.com/josegonzalez/ccvm/internal/sshcfg"
 )
@@ -129,7 +130,14 @@ func cmdUp(a *app, args []string) error {
 	}
 
 	if *dryRun {
-		return a.printPlan(spec, chosen, cfg, *install, *yolo)
+		layers, err := provision.Plan(provision.Options{
+			Profile: *profileName, Config: cfg, Source: a.profiles,
+			Home: a.home, Project: projectDir, Install: *install,
+		})
+		if err != nil {
+			return err
+		}
+		return a.printPlan(spec, chosen, cfg, layers, *yolo)
 	}
 
 	if spec.SSHPort == 0 && needsPort(chosen) {
@@ -221,6 +229,34 @@ func cmdUp(a *app, args []string) error {
 		}
 	}
 
+	layers, err := provision.Plan(provision.Options{
+		Profile: *profileName,
+		Config:  cfg,
+		Source:  a.profiles,
+		Home:    a.home,
+		Project: projectDir,
+		Install: *install,
+	})
+	if err != nil {
+		unwind()
+		return &Fault{
+			Backend: chosen, Step: "resolve provisioning hooks", Cause: err,
+			Cleanup: "machine destroyed; nothing left running.",
+		}
+	}
+	if err := provision.Run(a.ctx, b, handle, layers, func(name string) {
+		fmt.Fprintf(a.out, "  provisioning: %s\n", name)
+	}); err != nil {
+		unwind()
+		return &Fault{
+			Backend: chosen,
+			Step:    "provision the machine",
+			Cause:   err,
+			Fix:     "fix the hook and try again, or start without it using --profile base",
+			Cleanup: "machine destroyed; nothing left running.",
+		}
+	}
+
 	codeOpts := code.Options{
 		Mode:         mode,
 		Project:      projectDir,
@@ -258,14 +294,7 @@ func cmdUp(a *app, args []string) error {
 		return nil
 	}
 
-	opts := attach.Options{
-		Target:        target,
-		WorkDir:       spec.WorkDir,
-		SessionName:   spec.Name,
-		RemoteControl: cred.SupportsRemoteControl(),
-		Yolo:          *yolo,
-		IdentityFile:  a.sshKey.Private,
-	}
+	opts := a.attachOptions(target, spec, cred, *yolo)
 	if err := attach.Run(opts); err != nil {
 		return err
 	}
@@ -396,6 +425,24 @@ func (a *app) readSessionFrom(b backend.Backend, h backend.Handle) (session.Sess
 		return session.Session{}, err
 	}
 	return session.Unmarshal(data)
+}
+
+// attachOptions builds the session invocation.
+//
+// Split out so the wiring is testable: whether --yolo actually reaches the
+// claude process is not something to take on trust, and it is invisible from
+// outside once ssh and tmux are in the way.
+func (a *app) attachOptions(target string, spec backend.Spec, cred creds.Source, yolo bool) attach.Options {
+	return attach.Options{
+		Target:      target,
+		WorkDir:     spec.WorkDir,
+		SessionName: spec.Name,
+		// Remote Control needs a real login; asking for it on the token path
+		// would produce a session that silently never connects.
+		RemoteControl: cred.SupportsRemoteControl(),
+		Yolo:          yolo,
+		IdentityFile:  a.sshKey.Private,
+	}
 }
 
 // installSSHKey puts ccvm's public key in the guest's authorized_keys.
@@ -620,7 +667,7 @@ func (a *app) writeSessionRecord(b backend.Backend, h backend.Handle, spec backe
 	return b.Push(a.ctx, h, path, backend.SessionFile)
 }
 
-func (a *app) printPlan(spec backend.Spec, chosen string, cfg *profile.Config, install string, yolo bool) error {
+func (a *app) printPlan(spec backend.Spec, chosen string, cfg *profile.Config, layers []provision.Layer, yolo bool) error {
 	fmt.Fprintf(a.out, "would create %s\n", spec.Name)
 	fmt.Fprintf(a.out, "  backend   %s\n", chosen)
 	fmt.Fprintf(a.out, "  profile   %s\n", spec.Profile)
@@ -628,11 +675,12 @@ func (a *app) printPlan(spec backend.Spec, chosen string, cfg *profile.Config, i
 	fmt.Fprintf(a.out, "  code      %s (%s -> %s)\n", spec.CodeMode, spec.Project, spec.WorkDir)
 	fmt.Fprintf(a.out, "  resources %d cpu, %s memory, %s disk\n", spec.CPUs, spec.Memory, spec.Disk)
 	fmt.Fprintf(a.out, "  ttl       %s\n", dash(spec.TTL))
-	if len(cfg.Provision.Packages) > 0 {
-		fmt.Fprintf(a.out, "  packages  %s\n", strings.Join(cfg.Provision.Packages, ", "))
-	}
-	if install != "" {
-		fmt.Fprintf(a.out, "  --install %s\n", install)
+	for i, l := range layers {
+		label := "provision"
+		if i > 0 {
+			label = ""
+		}
+		fmt.Fprintf(a.out, "  %-9s %s\n", label, l.Name)
 	}
 	if yolo {
 		fmt.Fprintln(a.out, "  claude    --dangerously-skip-permissions")

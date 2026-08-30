@@ -13,6 +13,27 @@ type Layered struct {
 	Sources []Source
 }
 
+// Script asks each source in turn, so a user profile's hook shadows a
+// built-in's the same way its config does.
+func (l Layered) Script(profile, name string) ([]byte, error) {
+	var lastErr error
+	for _, s := range l.Sources {
+		ss, ok := s.(ScriptSource)
+		if !ok {
+			continue
+		}
+		data, err := ss.Script(profile, name)
+		if err == nil {
+			return data, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = fs.ErrNotExist
+	}
+	return nil, lastErr
+}
+
 func (l Layered) Load(name string) (*Config, error) {
 	var lastErr error
 	for _, s := range l.Sources {
