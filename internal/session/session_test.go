@@ -165,3 +165,35 @@ func TestUnmarshalRejectsGarbage(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 }
+
+// The login is movable, not copyable, so ccvm has to know which machine holds
+// it. That cannot be inferred after the fact.
+func TestHoldsLogin(t *testing.T) {
+	tests := map[string]bool{
+		"login": true,
+		"token": false,
+		"none":  false,
+		"":      false,
+	}
+	for mode, want := range tests {
+		t.Run(mode, func(t *testing.T) {
+			if got := (session.Session{AuthMode: mode}).HoldsLogin(); got != want {
+				t.Errorf("HoldsLogin() = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestAuthModeSurvivesRoundTrip(t *testing.T) {
+	data, err := session.Marshal(session.Session{Name: "cc-foo", AuthMode: "login"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := session.Unmarshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.HoldsLogin() {
+		t.Errorf("AuthMode = %q, want it preserved", got.AuthMode)
+	}
+}

@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/josegonzalez/ccvm/internal/backend"
 	"github.com/josegonzalez/ccvm/internal/backendtest"
+	"github.com/josegonzalez/ccvm/internal/creds"
 	"github.com/josegonzalez/ccvm/internal/profile"
 	"github.com/josegonzalez/ccvm/internal/run"
 	"github.com/josegonzalez/ccvm/internal/session"
@@ -439,5 +443,69 @@ func TestIsLogLine(t *testing.T) {
 		if got := isLogLine(line); got != want {
 			t.Errorf("isLogLine(%q) = %v, want %v", line, got, want)
 		}
+	}
+}
+
+func TestCredsImportPullsTheLogin(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, out, _ := newTestApp(t, f)
+
+	body := `{"claudeAiOauth":{"refreshToken":"r","refreshTokenExpiresAt":` +
+		strconv.FormatInt(time.Now().Add(720*time.Hour).UnixMilli(), 10) + `}}`
+	f.Seed(backend.Machine{Name: "cc-broker", State: backend.StateRunning},
+		map[string][]byte{creds.GuestCredentialsFile: []byte(body)})
+
+	if err := a.credsImport("cc-broker"); err != nil {
+		t.Fatalf("credsImport: %v", err)
+	}
+	dst := filepath.Join(a.home, ".config", "ccvm", "credentials.json")
+	st, err := os.Stat(dst)
+	if err != nil {
+		t.Fatalf("credential not written: %v", err)
+	}
+	// A credential the rest of the machine can read is not one worth having.
+	if mode := st.Mode().Perm(); mode != 0o600 {
+		t.Errorf("mode = %04o, want 0600", mode)
+	}
+	if !strings.Contains(out.String(), "days") {
+		t.Errorf("out = %q, want the expiry reported", out.String())
+	}
+}
+
+// A wrong path yields a file that only fails later, when a session cannot
+// authenticate. Verify at import instead.
+func TestCredsImportRejectsSomethingThatIsNotALogin(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	f.Seed(backend.Machine{Name: "cc-broker", State: backend.StateRunning},
+		map[string][]byte{creds.GuestCredentialsFile: []byte("not json")})
+
+	if err := a.credsImport("cc-broker"); err == nil {
+		t.Fatal("expected an error for a file that is not a login")
+	}
+	if _, err := os.Stat(filepath.Join(a.home, ".config", "ccvm", "credentials.json")); err == nil {
+		t.Error("an unusable credential was left behind")
+	}
+}
+
+func TestCredsImportUnknownMachine(t *testing.T) {
+	a, _, _ := newTestApp(t, backendtest.NewFake("docker"))
+	if err := a.credsImport("cc-ghost"); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+// Running import against a machine where nobody has logged in yet should say so.
+func TestCredsImportExplainsAMissingLogin(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	f.Seed(backend.Machine{Name: "cc-broker", State: backend.StateRunning}, nil)
+
+	err := a.credsImport("cc-broker")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "/login") {
+		t.Errorf("err = %v, want it to say what is missing", err)
 	}
 }
