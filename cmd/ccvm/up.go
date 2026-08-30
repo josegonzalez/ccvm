@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/josegonzalez/ccvm/internal/backend"
+	"github.com/josegonzalez/ccvm/internal/creds"
 	"github.com/josegonzalez/ccvm/internal/profile"
 	"github.com/josegonzalez/ccvm/internal/session"
 	"github.com/josegonzalez/ccvm/internal/sshcfg"
@@ -35,6 +36,7 @@ func cmdUp(a *app, args []string) error {
 		keep        = fs.Bool("keep", false, "leave the machine running after the session ends")
 		yolo        = fs.Bool("yolo", false, "run Claude with --dangerously-skip-permissions")
 		useVM       = fs.Bool("vm", false, "proxmox only: use the VM template instead of LXC")
+		remoteCtl   = fs.Bool("remote-control", false, "use a claude.ai login so the session can be driven from claude.ai or your phone")
 		install     = fs.String("install", "", "extra packages to install at spawn, comma separated")
 		dryRun      = fs.Bool("dry-run", false, "resolve and preflight without creating anything")
 	)
@@ -87,6 +89,16 @@ func cmdUp(a *app, args []string) error {
 		Keep:      *keep,
 		TTL:       ttlFor(cfg, *keep),
 		CreatedAt: time.Now().UTC(),
+	}
+
+	cred, err := creds.Resolve(a.home, os.Getenv, *remoteCtl)
+	if err != nil {
+		return err
+	}
+	if *remoteCtl && *yolo {
+		fmt.Fprintln(a.err, "ccvm: warning: --remote-control with --yolo gives a session that bypasses\n"+
+			"      permission prompts and can be driven from your phone. The machine is\n"+
+			"      disposable, but it holds a live claude.ai login.")
 	}
 
 	if err := b.Preflight(a.ctx, spec); err != nil {
@@ -183,6 +195,14 @@ func cmdUp(a *app, args []string) error {
 		rollback = append(rollback, func() { _ = a.ssh.Remove(spec.Name) })
 	}
 
+	if err := a.installCredentials(b, handle, spec, cred); err != nil {
+		unwind()
+		return &Fault{
+			Backend: chosen, Step: "install the Claude credential", Cause: err,
+			Cleanup: "machine destroyed; nothing left running.",
+		}
+	}
+
 	if err := a.writeSessionRecord(b, handle, spec); err != nil {
 		unwind()
 		return &Fault{
@@ -191,7 +211,7 @@ func cmdUp(a *app, args []string) error {
 		}
 	}
 
-	fmt.Fprintf(a.out, "%s is up (%s, %s)\n", spec.Name, chosen, mode)
+	fmt.Fprintf(a.out, "%s is up (%s, %s, %s)\n", spec.Name, chosen, mode, cred.Describe())
 	fmt.Fprintf(a.out, "  ssh %s\n", b.SSHTarget(handle))
 	return nil
 }
@@ -241,6 +261,76 @@ func (a *app) installSSHKey(b backend.Backend, h backend.Handle) error {
 		return err
 	}
 	return nil
+}
+
+// installCredentials puts the session's credential and pre-accepted workspace
+// trust into the machine.
+//
+// Secrets go in a file at 0600 rather than on a command line: an ssh argument
+// is visible in the process list on both ends and lands in shell history.
+func (a *app) installCredentials(b backend.Backend, h backend.Handle, spec backend.Spec, c creds.Source) error {
+	if _, err := b.Exec(a.ctx, h, "mkdir", "-p", filepath.Dir(creds.GuestEnvFile)); err != nil {
+		return err
+	}
+	if err := a.pushString(b, h, c.EnvFile(), creds.GuestEnvFile, "600"); err != nil {
+		return fmt.Errorf("write %s: %w", creds.GuestEnvFile, err)
+	}
+
+	if c.Mode == creds.Login {
+		if _, err := b.Exec(a.ctx, h, "mkdir", "-p", filepath.Dir(creds.GuestCredentialsFile)); err != nil {
+			return err
+		}
+		if err := b.Push(a.ctx, h, c.CredentialsFile, creds.GuestCredentialsFile); err != nil {
+			return fmt.Errorf("copy the claude.ai login: %w", err)
+		}
+		if _, err := b.Exec(a.ctx, h, "chown", "-R", "root:root", filepath.Dir(creds.GuestCredentialsFile)); err != nil {
+			return err
+		}
+		if _, err := b.Exec(a.ctx, h, "chmod", "600", creds.GuestCredentialsFile); err != nil {
+			return err
+		}
+	}
+
+	// Trust is best-effort. Claude Code owns this schema and it can change; a
+	// trust dialog is an annoyance, whereas refusing to start a session over
+	// one would be worse.
+	trust, err := creds.TrustFile(spec.WorkDir, spec.Project)
+	if err != nil {
+		fmt.Fprintf(a.err, "ccvm: could not seed workspace trust: %v\n", err)
+		return nil
+	}
+	if err := a.pushString(b, h, string(trust), creds.GuestConfigFile, "600"); err != nil {
+		fmt.Fprintf(a.err, "ccvm: could not seed workspace trust: %v\n", err)
+	}
+	return nil
+}
+
+// pushString writes content into the machine at the given mode.
+func (a *app) pushString(b backend.Backend, h backend.Handle, content, dst, mode string) error {
+	tmp, err := os.CreateTemp("", "ccvm-push-*")
+	if err != nil {
+		return err
+	}
+	path := tmp.Name()
+	defer os.Remove(path)
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	tmp.Close()
+	if err := os.Chmod(path, 0o600); err != nil {
+		return err
+	}
+
+	if err := b.Push(a.ctx, h, path, dst); err != nil {
+		return err
+	}
+	// File transfer carries the host's uid, so ownership has to be set here too.
+	if _, err := b.Exec(a.ctx, h, "chown", "root:root", dst); err != nil {
+		return err
+	}
+	_, err = b.Exec(a.ctx, h, "chmod", mode, dst)
+	return err
 }
 
 // resolveConfig applies the precedence chain: the profile and its ancestors,

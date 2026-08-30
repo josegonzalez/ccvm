@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/josegonzalez/ccvm/internal/backend"
 	"github.com/josegonzalez/ccvm/internal/backendtest"
@@ -340,5 +343,170 @@ func TestUpRollsBackWhenKeyInstallFails(t *testing.T) {
 	}
 	if len(f.Destroyed) != 1 {
 		t.Errorf("Destroyed = %v, want the unreachable machine cleaned up", f.Destroyed)
+	}
+}
+
+func withToken(t *testing.T, token string) {
+	t.Helper()
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", token)
+}
+
+func TestUpInstallsTokenCredential(t *testing.T) {
+	withToken(t, "sk-ant-oat-test")
+	f := backendtest.NewFake("docker")
+	a, out, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	if err := cmdUp(a, []string{dir}); err != nil {
+		t.Fatalf("cmdUp: %v", err)
+	}
+
+	env, ok := f.FileIn("cc-demo", "/etc/ccvm/env")
+	if !ok {
+		t.Fatal("no /etc/ccvm/env in the guest; Claude would be unauthenticated")
+	}
+	if !strings.Contains(string(env), "sk-ant-oat-test") {
+		t.Errorf("env = %q, want the token", env)
+	}
+	if !strings.Contains(string(env), "CCVM_AUTH_MODE=token") {
+		t.Errorf("env = %q, want the mode recorded", env)
+	}
+	if !strings.Contains(out.String(), "model requests only") {
+		t.Errorf("out = %q, want the token path's limitation stated", out.String())
+	}
+}
+
+// A secret on a command line is visible in the process list on both ends and
+// lands in shell history.
+func TestUpNeverPutsTheTokenInArgv(t *testing.T) {
+	withToken(t, "sk-ant-oat-supersecret")
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	if err := cmdUp(a, []string{dir}); err != nil {
+		t.Fatalf("cmdUp: %v", err)
+	}
+	for _, call := range f.ExecCalls() {
+		for _, arg := range call {
+			if strings.Contains(arg, "supersecret") {
+				t.Fatalf("token appeared in a command: %v", call)
+			}
+		}
+	}
+}
+
+// The credential file must not be world-readable inside the guest.
+func TestUpTightensCredentialPermissions(t *testing.T) {
+	withToken(t, "sk-ant-oat-test")
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	if err := cmdUp(a, []string{dir}); err != nil {
+		t.Fatalf("cmdUp: %v", err)
+	}
+	if !f.Ran("chmod", "600", "/etc/ccvm/env") {
+		t.Errorf("credential file left readable\ncalls: %v", f.ExecCalls())
+	}
+	if !f.Ran("chown", "root:root", "/etc/ccvm/env") {
+		t.Errorf("credential file left owned by the host uid\ncalls: %v", f.ExecCalls())
+	}
+}
+
+// Without pre-accepted trust every session opens on a dialog, and Remote
+// Control never connects at all.
+func TestUpSeedsWorkspaceTrust(t *testing.T) {
+	withToken(t, "sk-ant-oat-test")
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	if err := cmdUp(a, []string{dir}); err != nil {
+		t.Fatalf("cmdUp: %v", err)
+	}
+	raw, ok := f.FileIn("cc-demo", "/root/.claude.json")
+	if !ok {
+		t.Fatal("no trust config in the guest; every session would open on a dialog")
+	}
+	var cfg struct {
+		Projects map[string]struct {
+			HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
+		} `json:"projects"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("trust config is not valid json: %v", err)
+	}
+	if !cfg.Projects["/work"].HasTrustDialogAccepted {
+		t.Errorf("/work not trusted: %s", raw)
+	}
+}
+
+// A missing credential must fail before a machine exists, not after.
+func TestUpFailsBeforeCreatingWhenNoCredential(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+	// After newTestApp, which seeds a default credential.
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+
+	err := cmdUp(a, []string{dir})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if f.CreateCalls != 0 {
+		t.Errorf("CreateCalls = %d; a machine was created despite having no credential", f.CreateCalls)
+	}
+	if !strings.Contains(err.Error(), "setup-token") {
+		t.Errorf("err = %v, want it to say how to get a credential", err)
+	}
+}
+
+// --remote-control needs a real login; the token cannot establish one, so
+// asking for it without a login must fail rather than produce a session that
+// silently never connects.
+func TestUpRemoteControlRequiresALogin(t *testing.T) {
+	withToken(t, "sk-ant-oat-test")
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	t.Setenv("CCVM_CREDENTIALS_FILE", "")
+	err := cmdUp(a, []string{"-remote-control", dir})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "Keychain") {
+		t.Errorf("err = %v, want it to explain where a login comes from", err)
+	}
+	if f.CreateCalls != 0 {
+		t.Error("a machine was created despite having no usable login")
+	}
+}
+
+func TestUpRemoteControlWithYoloWarns(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, errOut := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	loginPath := filepath.Join(t.TempDir(), "credentials.json")
+	body := `{"claudeAiOauth":{"accessToken":"x","expiresAt":` +
+		strconv.FormatInt(time.Now().Add(720*time.Hour).UnixMilli(), 10) + `}}`
+	if err := os.WriteFile(loginPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// After newTestApp, which clears this to keep the default path in play.
+	t.Setenv("CCVM_CREDENTIALS_FILE", loginPath)
+
+	if err := cmdUp(a, []string{"-remote-control", "-yolo", dir}); err != nil {
+		t.Fatalf("cmdUp: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "phone") {
+		t.Errorf("stderr = %q, want a warning about a phone-drivable bypassed session", errOut.String())
+	}
+
+	// The login is copied in, not just referenced.
+	if _, ok := f.FileIn("cc-demo", "/root/.claude/.credentials.json"); !ok {
+		t.Error("the claude.ai login was not copied into the guest")
 	}
 }

@@ -38,6 +38,7 @@ var commands = []command{
 	{"rm", "destroy machines", cmdRm},
 	{"gc", "reap expired and finished machines", cmdGC},
 	{"profiles", "list or check profiles", cmdProfiles},
+	{"creds", "check the Claude credential sessions will use", cmdCreds},
 	{"doctor", "check whether a machine could be created", cmdDoctor},
 	{"version", "print the version", cmdVersion},
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/josegonzalez/ccvm/internal/backend"
+	"github.com/josegonzalez/ccvm/internal/creds"
 	"github.com/josegonzalez/ccvm/internal/profile"
 	"github.com/josegonzalez/ccvm/internal/session"
 	"golang.org/x/sync/errgroup"
@@ -448,6 +449,62 @@ func (a *app) profilesLint(name string) error {
 	}
 	fmt.Fprintf(a.out, "profile %q is valid for all backends\n", name)
 	return nil
+}
+
+// ---------------------------------------------------------------- creds
+
+func cmdCreds(a *app, args []string) error {
+	sub := "check"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		sub, args = args[0], args[1:]
+	}
+	if sub != "check" {
+		return fmt.Errorf("unknown subcommand %q; try check", sub)
+	}
+
+	// Report both paths, because which one a session gets depends on a flag
+	// and the failure modes are different.
+	token, tokenErr := creds.Resolve(a.home, os.Getenv, false)
+	login, loginErr := creds.Resolve(a.home, os.Getenv, true)
+
+	if tokenErr != nil {
+		fmt.Fprintf(a.out, "token      unavailable: %v\n", firstLine(tokenErr.Error()))
+	} else {
+		fmt.Fprintf(a.out, "token      ready, from %s\n", token.Origin)
+	}
+
+	if loginErr != nil {
+		fmt.Fprintf(a.out, "login      unavailable: %v\n", firstLine(loginErr.Error()))
+		fmt.Fprintln(a.out, "           (--remote-control needs this; the token path cannot drive sessions from claude.ai)")
+	} else {
+		expiry, err := creds.ExpiresAt(login.CredentialsFile)
+		switch {
+		case err != nil:
+			fmt.Fprintf(a.out, "login      ready, from %s (expiry unreadable: %v)\n", login.Origin, err)
+		case expiry.IsZero():
+			fmt.Fprintf(a.out, "login      ready, from %s (no expiry recorded)\n", login.Origin)
+		default:
+			days := int(time.Until(expiry).Hours() / 24)
+			fmt.Fprintf(a.out, "login      ready, from %s (expires in %d days)\n", login.Origin, days)
+			// Claude Code warns three days out, and an expired login stalls an
+			// unattended session silently.
+			if days <= 3 {
+				fmt.Fprintf(a.err, "ccvm: warning: the claude.ai login expires in %d days; renew it with `/login` on the broker machine\n", days)
+			}
+		}
+	}
+
+	if tokenErr != nil && loginErr != nil {
+		return fmt.Errorf("no usable Claude credential; sessions will not be able to authenticate")
+	}
+	return nil
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // ---------------------------------------------------------------- doctor

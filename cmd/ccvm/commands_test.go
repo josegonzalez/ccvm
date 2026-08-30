@@ -19,6 +19,10 @@ import (
 func newTestApp(t *testing.T, fake *backendtest.Fake) (*app, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 	home := t.TempDir()
+	// `up` needs a credential, so give every test one by default. Tests about
+	// the missing-credential path override this afterwards.
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-testdefault")
+	t.Setenv("CCVM_CREDENTIALS_FILE", "")
 	key := sshkey.Default(home)
 	if _, err := key.Ensure(); err != nil {
 		t.Fatalf("generate ssh key: %v", err)
