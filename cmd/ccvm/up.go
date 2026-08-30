@@ -3,13 +3,13 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/josegonzalez/ccvm/internal/attach"
 	"github.com/josegonzalez/ccvm/internal/backend"
 	"github.com/josegonzalez/ccvm/internal/creds"
 	"github.com/josegonzalez/ccvm/internal/profile"
@@ -39,6 +39,7 @@ func cmdUp(a *app, args []string) error {
 		remoteCtl   = fs.Bool("remote-control", false, "use a claude.ai login so the session can be driven from claude.ai or your phone")
 		install     = fs.String("install", "", "extra packages to install at spawn, comma separated")
 		dryRun      = fs.Bool("dry-run", false, "resolve and preflight without creating anything")
+		detach      = fs.Bool("detach", false, "provision and return instead of entering the session")
 	)
 	if err := fs.Parse(args); err != nil {
 		return errUsage
@@ -75,8 +76,13 @@ func cmdUp(a *app, args []string) error {
 		return fmt.Errorf("profile %q: %w", *profileName, err)
 	}
 
+	name, err := a.uniqueName(projectDir)
+	if err != nil {
+		return err
+	}
+
 	spec := backend.Spec{
-		Name:      machineName(projectDir),
+		Name:      name,
 		Profile:   *profileName,
 		Image:     image,
 		Project:   projectDir,
@@ -211,9 +217,108 @@ func cmdUp(a *app, args []string) error {
 		}
 	}
 
+	target := b.SSHTarget(handle)
 	fmt.Fprintf(a.out, "%s is up (%s, %s, %s)\n", spec.Name, chosen, mode, cred.Describe())
-	fmt.Fprintf(a.out, "  ssh %s\n", b.SSHTarget(handle))
+
+	if *detach {
+		fmt.Fprintf(a.out, "  ccvm attach %s\n", spec.Name)
+		fmt.Fprintf(a.out, "  ssh %s\n", target)
+		return nil
+	}
+
+	opts := attach.Options{
+		Target:        target,
+		WorkDir:       spec.WorkDir,
+		SessionName:   spec.Name,
+		RemoteControl: cred.SupportsRemoteControl(),
+		Yolo:          *yolo,
+		IdentityFile:  a.sshKey.Private,
+	}
+	if err := attach.Run(opts); err != nil {
+		return err
+	}
+
+	// The session ended. Whether the machine follows is the session record's
+	// call, not this flag's: `ccvm keep` and `ccvm-done --keep` both work from
+	// inside a running session, after --keep was or was not passed here.
+	return a.teardownAfterSession(b, handle, spec)
+}
+
+// uniqueName derives a machine name from the project, suffixing when one is
+// already taken.
+//
+// A project can have several concurrent sessions, so the name has to be free
+// rather than merely derived. Existing machines are consulted across every
+// backend, since a name is also an ssh alias and two would collide there.
+func (a *app) uniqueName(projectDir string) (string, error) {
+	base := machineName(projectDir)
+
+	existing, err := a.listAll(true)
+	if err != nil {
+		return "", err
+	}
+	taken := make(map[string]bool, len(existing))
+	for _, m := range existing {
+		taken[m.Name] = true
+	}
+
+	if !taken[base] {
+		return base, nil
+	}
+	for i := 2; i < 100; i++ {
+		candidate := fmt.Sprintf("%s-%d", base, i)
+		if !taken[candidate] {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("too many machines already exist for %s; destroy some with `ccvm rm`", projectDir)
+}
+
+// teardownAfterSession destroys the machine once the session ends, unless it
+// was marked to survive.
+//
+// The in-machine session record is the authority, not the flag `up` was given:
+// `ccvm keep` and `ccvm-done --keep` both mark a machine from inside a session
+// that is already running.
+func (a *app) teardownAfterSession(b backend.Backend, h backend.Handle, spec backend.Spec) error {
+	keep := spec.Keep
+	if rec, err := a.readSessionFrom(b, h); err == nil {
+		keep = rec.Kept()
+	}
+
+	if keep {
+		fmt.Fprintf(a.out, "%s is still running; reattach with `ccvm attach %s`\n", spec.Name, spec.Name)
+		return nil
+	}
+
+	if err := b.Destroy(a.ctx, h); err != nil {
+		return fmt.Errorf("destroy %s: %w", spec.Name, err)
+	}
+	if err := a.ssh.Remove(spec.Name); err != nil {
+		fmt.Fprintf(a.err, "ccvm: remove ssh entry for %s: %v\n", spec.Name, err)
+	}
+	fmt.Fprintf(a.out, "destroyed %s\n", spec.Name)
 	return nil
+}
+
+// readSessionFrom reads a machine's record given a live handle.
+func (a *app) readSessionFrom(b backend.Backend, h backend.Handle) (session.Session, error) {
+	tmp, err := os.CreateTemp("", "ccvm-session-*.toml")
+	if err != nil {
+		return session.Session{}, err
+	}
+	path := tmp.Name()
+	tmp.Close()
+	defer os.Remove(path)
+
+	if err := b.Pull(a.ctx, h, backend.SessionFile, path); err != nil {
+		return session.Session{}, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return session.Session{}, err
+	}
+	return session.Unmarshal(data)
 }
 
 // installSSHKey puts ccvm's public key in the guest's authorized_keys.
@@ -572,12 +677,23 @@ func fixFor(backendName string, err error) string {
 	return ""
 }
 
-// sshExec runs ssh with the terminal attached, for `ccvm ssh` and `ccvm attach`.
-func sshExec(target string, args ...string) error {
-	argv := append([]string{"-t", target}, args...)
-	cmd := exec.Command("ssh", argv...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return cmd.Run()
+// targetFor resolves a machine name to an ssh destination, so `ccvm ssh` works
+// on backends whose target is not the machine name.
+func (a *app) targetFor(name string) (string, error) {
+	machines, err := a.listAll(true)
+	if err != nil {
+		return "", err
+	}
+	for _, m := range machines {
+		if m.Name != name {
+			continue
+		}
+		if m.SSH != "" {
+			return m.SSH, nil
+		}
+		return m.Name, nil
+	}
+	return "", fmt.Errorf("no machine named %q", name)
 }
 
 func cmdSSH(a *app, args []string) error {
@@ -588,16 +704,28 @@ func cmdSSH(a *app, args []string) error {
 	if len(rest) > 0 && rest[0] == "--" {
 		rest = rest[1:]
 	}
-	return sshExec(name, rest...)
+	target, err := a.targetFor(name)
+	if err != nil {
+		return err
+	}
+	return attach.Shell(attach.Options{Target: target, IdentityFile: a.sshKey.Private}, rest...)
 }
 
 // cmdAttach reconnects to the machine's Claude session. tmux new -A attaches if
-// the session exists and creates it otherwise, so a dropped connection is
-// recoverable rather than fatal.
+// the session exists and creates it otherwise, so a dropped connection detaches
+// rather than ending the session.
 func cmdAttach(a *app, args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: ccvm attach <name>")
 	}
 	name := args[0]
-	return sshExec(name, "tmux", "new", "-A", "-s", "cc")
+	target, err := a.targetFor(name)
+	if err != nil {
+		return err
+	}
+	return attach.Run(attach.Options{
+		Target:       target,
+		SessionName:  name,
+		IdentityFile: a.sshKey.Private,
+	})
 }

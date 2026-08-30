@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -343,3 +344,98 @@ func TestUnknownBackendNamesTheAvailableOnes(t *testing.T) {
 type errBoom struct{}
 
 func (errBoom) Error() string { return "boom" }
+
+// After a foreground session ends, the in-machine record decides the machine's
+// fate — not the flag `up` was given, since `ccvm keep` and `ccvm-done --keep`
+// both mark a machine from inside a session that is already running.
+func TestTeardownHonoursTheRecordOverTheFlag(t *testing.T) {
+	tests := []struct {
+		name        string
+		specKeep    bool
+		recordTTL   string
+		wantDestroy bool
+	}{
+		{"ephemeral stays ephemeral", false, "12h", true},
+		{"marked kept from inside survives", false, session.Keep, false},
+		{"kept at spawn survives", true, session.Keep, false},
+		{"keep revoked from inside is destroyed", true, "12h", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := backendtest.NewFake("docker")
+			a, _, _ := newTestApp(t, f)
+			seedMachine(t, f, "cc-demo", session.Session{Name: "cc-demo", TTL: tt.recordTTL})
+
+			h := backend.Handle{Backend: "docker", Name: "cc-demo", ID: "cc-demo"}
+			spec := backend.Spec{Name: "cc-demo", Keep: tt.specKeep}
+			if err := a.teardownAfterSession(f, h, spec); err != nil {
+				t.Fatalf("teardown: %v", err)
+			}
+
+			destroyed := len(f.Destroyed) == 1
+			if destroyed != tt.wantDestroy {
+				t.Errorf("destroyed = %v, want %v", destroyed, tt.wantDestroy)
+			}
+		})
+	}
+}
+
+// A machine whose record cannot be read falls back to the spawn-time flag,
+// rather than guessing in the destructive direction.
+func TestTeardownFallsBackToTheSpecWhenRecordIsUnreadable(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	f.Seed(backend.Machine{Name: "cc-demo", State: backend.StateRunning}, nil) // no record
+
+	h := backend.Handle{Backend: "docker", Name: "cc-demo", ID: "cc-demo"}
+	if err := a.teardownAfterSession(f, h, backend.Spec{Name: "cc-demo", Keep: true}); err != nil {
+		t.Fatalf("teardown: %v", err)
+	}
+	if len(f.Destroyed) != 0 {
+		t.Error("destroyed a machine that was created with --keep")
+	}
+}
+
+// kubectl repeats the same klog line five times before saying anything useful.
+// A listing that dumps all of it on every invocation is unusable.
+func TestCondenseKeepsTheUsefulLine(t *testing.T) {
+	err := errors.New(`list jobs: kubectl get jobs: exit 1: E0830 04:16:25.195915   44618 memcache.go:265] "Unhandled Error" err="couldn't get list"
+E0830 04:16:25.196475   44618 memcache.go:265] "Unhandled Error" err="couldn't get list"
+The connection to the server localhost:8080 was refused - did you specify the right host or port?`)
+
+	got := condense(err)
+	if !strings.Contains(got, "connection to the server") {
+		t.Errorf("condense = %q, want the actionable line", got)
+	}
+	if strings.Contains(got, "memcache.go") {
+		t.Errorf("condense = %q, want log records dropped", got)
+	}
+}
+
+func TestCondenseSingleLinePassesThrough(t *testing.T) {
+	if got := condense(errors.New("daemon not running")); got != "daemon not running" {
+		t.Errorf("condense = %q", got)
+	}
+}
+
+func TestCondenseTruncatesVeryLongLines(t *testing.T) {
+	got := condense(errors.New(strings.Repeat("x", 500)))
+	if len(got) > 210 {
+		t.Errorf("condense produced %d chars; a listing warning must stay readable", len(got))
+	}
+}
+
+func TestIsLogLine(t *testing.T) {
+	tests := map[string]bool{
+		`E0830 04:16:25.195915   44618 memcache.go:265] "Unhandled Error"`: true,
+		"I0830 04:16:25.195915 something":                                  true,
+		"The connection to the server localhost:8080 was refused":          false,
+		"Error: no such image":                                             false,
+		"":                                                                 false,
+	}
+	for line, want := range tests {
+		if got := isLogLine(line); got != want {
+			t.Errorf("isLogLine(%q) = %v, want %v", line, got, want)
+		}
+	}
+}

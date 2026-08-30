@@ -29,7 +29,7 @@ func TestUpCreatesMachineSSHEntryAndSessionRecord(t *testing.T) {
 	a, out, _ := newTestApp(t, f)
 	dir := newProject(t, "demo")
 
-	if err := cmdUp(a, []string{dir}); err != nil {
+	if err := cmdUp(a, []string{"-detach", dir}); err != nil {
 		t.Fatalf("cmdUp: %v", err)
 	}
 
@@ -76,7 +76,7 @@ func TestUpRollsBackWhenWaitFails(t *testing.T) {
 	a, _, _ := newTestApp(t, f)
 	dir := newProject(t, "demo")
 
-	err := cmdUp(a, []string{dir})
+	err := cmdUp(a, []string{"-detach", dir})
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -103,7 +103,7 @@ func TestUpRollsBackSSHEntryToo(t *testing.T) {
 	// Seed a machine so the session-record push targets a machine that exists,
 	// then make the push fail by destroying it out from under the flow.
 	f.DestroyErr = nil
-	if err := cmdUp(a, []string{dir}); err != nil {
+	if err := cmdUp(a, []string{"-detach", dir}); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 	before, _ := a.ssh.Read()
@@ -126,7 +126,7 @@ func TestUpRejectsVMOnNonProxmoxBackend(t *testing.T) {
 	a, _, _ := newTestApp(t, backendtest.NewFake("docker"))
 	dir := newProject(t, "demo")
 
-	err := cmdUp(a, []string{"-vm", dir})
+	err := cmdUp(a, []string{"-detach", "-vm", dir})
 	if err == nil {
 		t.Fatal("expected --vm to be refused on docker")
 	}
@@ -140,7 +140,7 @@ func TestUpRejectsUnsupportedCodeMode(t *testing.T) {
 	a, _, _ := newTestApp(t, f)
 	dir := newProject(t, "demo")
 
-	err := cmdUp(a, []string{"-backend", "k8s", "-code", "mount", dir})
+	err := cmdUp(a, []string{"-detach", "-backend", "k8s", "-code", "mount", dir})
 	if err == nil {
 		t.Fatal("expected --code mount to be refused on k8s")
 	}
@@ -175,7 +175,7 @@ func TestUpKeepMarksSessionAndSpec(t *testing.T) {
 	a, _, _ := newTestApp(t, f)
 	dir := newProject(t, "demo")
 
-	if err := cmdUp(a, []string{"-keep", dir}); err != nil {
+	if err := cmdUp(a, []string{"-detach", "-keep", dir}); err != nil {
 		t.Fatalf("cmdUp: %v", err)
 	}
 	data, ok := f.FileIn("cc-demo", backend.SessionFile)
@@ -237,7 +237,7 @@ func TestUpRefusesProjectOverlaySettingImage(t *testing.T) {
 
 func TestUpRejectsMissingProject(t *testing.T) {
 	a, _, _ := newTestApp(t, backendtest.NewFake("docker"))
-	if err := cmdUp(a, []string{filepath.Join(t.TempDir(), "nope")}); err == nil {
+	if err := cmdUp(a, []string{"-detach", filepath.Join(t.TempDir(), "nope")}); err == nil {
 		t.Fatal("expected an error for a missing project directory")
 	}
 }
@@ -247,7 +247,7 @@ func TestUpEnsuresSSHConfigInclude(t *testing.T) {
 	a, _, _ := newTestApp(t, f)
 	dir := newProject(t, "demo")
 
-	if err := cmdUp(a, []string{dir}); err != nil {
+	if err := cmdUp(a, []string{"-detach", dir}); err != nil {
 		t.Fatalf("cmdUp: %v", err)
 	}
 	data, err := os.ReadFile(a.ssh.UserConfig)
@@ -266,7 +266,7 @@ func TestUpInstallsSSHKeyIntoTheGuest(t *testing.T) {
 	a, _, _ := newTestApp(t, f)
 	dir := newProject(t, "demo")
 
-	if err := cmdUp(a, []string{dir}); err != nil {
+	if err := cmdUp(a, []string{"-detach", dir}); err != nil {
 		t.Fatalf("cmdUp: %v", err)
 	}
 
@@ -290,7 +290,7 @@ func TestUpTightensAuthorizedKeysPermissions(t *testing.T) {
 	a, _, _ := newTestApp(t, f)
 	dir := newProject(t, "demo")
 
-	if err := cmdUp(a, []string{dir}); err != nil {
+	if err := cmdUp(a, []string{"-detach", dir}); err != nil {
 		t.Fatalf("cmdUp: %v", err)
 	}
 	// File transfer carries the host's uid, so the key lands owned by whoever
@@ -314,7 +314,7 @@ func TestUpSSHConfigNamesTheCCVMKey(t *testing.T) {
 	a, _, _ := newTestApp(t, f)
 	dir := newProject(t, "demo")
 
-	if err := cmdUp(a, []string{dir}); err != nil {
+	if err := cmdUp(a, []string{"-detach", dir}); err != nil {
 		t.Fatalf("cmdUp: %v", err)
 	}
 	hosts, err := a.ssh.Read()
@@ -337,7 +337,7 @@ func TestUpRollsBackWhenKeyInstallFails(t *testing.T) {
 	a, _, _ := newTestApp(t, f)
 	dir := newProject(t, "demo")
 
-	err := cmdUp(a, []string{dir})
+	err := cmdUp(a, []string{"-detach", dir})
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -357,7 +357,7 @@ func TestUpInstallsTokenCredential(t *testing.T) {
 	a, out, _ := newTestApp(t, f)
 	dir := newProject(t, "demo")
 
-	if err := cmdUp(a, []string{dir}); err != nil {
+	if err := cmdUp(a, []string{"-detach", dir}); err != nil {
 		t.Fatalf("cmdUp: %v", err)
 	}
 
@@ -384,7 +384,7 @@ func TestUpNeverPutsTheTokenInArgv(t *testing.T) {
 	a, _, _ := newTestApp(t, f)
 	dir := newProject(t, "demo")
 
-	if err := cmdUp(a, []string{dir}); err != nil {
+	if err := cmdUp(a, []string{"-detach", dir}); err != nil {
 		t.Fatalf("cmdUp: %v", err)
 	}
 	for _, call := range f.ExecCalls() {
@@ -403,7 +403,7 @@ func TestUpTightensCredentialPermissions(t *testing.T) {
 	a, _, _ := newTestApp(t, f)
 	dir := newProject(t, "demo")
 
-	if err := cmdUp(a, []string{dir}); err != nil {
+	if err := cmdUp(a, []string{"-detach", dir}); err != nil {
 		t.Fatalf("cmdUp: %v", err)
 	}
 	if !f.Ran("chmod", "600", "/etc/ccvm/env") {
@@ -422,7 +422,7 @@ func TestUpSeedsWorkspaceTrust(t *testing.T) {
 	a, _, _ := newTestApp(t, f)
 	dir := newProject(t, "demo")
 
-	if err := cmdUp(a, []string{dir}); err != nil {
+	if err := cmdUp(a, []string{"-detach", dir}); err != nil {
 		t.Fatalf("cmdUp: %v", err)
 	}
 	raw, ok := f.FileIn("cc-demo", "/root/.claude.json")
@@ -450,7 +450,7 @@ func TestUpFailsBeforeCreatingWhenNoCredential(t *testing.T) {
 	// After newTestApp, which seeds a default credential.
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
 
-	err := cmdUp(a, []string{dir})
+	err := cmdUp(a, []string{"-detach", dir})
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -472,7 +472,7 @@ func TestUpRemoteControlRequiresALogin(t *testing.T) {
 	dir := newProject(t, "demo")
 
 	t.Setenv("CCVM_CREDENTIALS_FILE", "")
-	err := cmdUp(a, []string{"-remote-control", dir})
+	err := cmdUp(a, []string{"-detach", "-remote-control", dir})
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -498,7 +498,7 @@ func TestUpRemoteControlWithYoloWarns(t *testing.T) {
 	// After newTestApp, which clears this to keep the default path in play.
 	t.Setenv("CCVM_CREDENTIALS_FILE", loginPath)
 
-	if err := cmdUp(a, []string{"-remote-control", "-yolo", dir}); err != nil {
+	if err := cmdUp(a, []string{"-detach", "-remote-control", "-yolo", dir}); err != nil {
 		t.Fatalf("cmdUp: %v", err)
 	}
 	if !strings.Contains(errOut.String(), "phone") {
@@ -508,5 +508,80 @@ func TestUpRemoteControlWithYoloWarns(t *testing.T) {
 	// The login is copied in, not just referenced.
 	if _, ok := f.FileIn("cc-demo", "/root/.claude/.credentials.json"); !ok {
 		t.Error("the claude.ai login was not copied into the guest")
+	}
+}
+
+// A project can have several concurrent sessions, so a name that is already
+// taken gets suffixed rather than colliding — the name is also an ssh alias.
+func TestUpCreatesASecondMachineForTheSameProject(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	if err := cmdUp(a, []string{"-detach", dir}); err != nil {
+		t.Fatalf("first up: %v", err)
+	}
+	if err := cmdUp(a, []string{"-detach", dir}); err != nil {
+		t.Fatalf("second up: %v", err)
+	}
+
+	machines, err := f.List(a.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(machines) != 2 {
+		t.Fatalf("got %d machines, want 2", len(machines))
+	}
+	names := map[string]bool{}
+	for _, m := range machines {
+		names[m.Name] = true
+	}
+	if !names["cc-demo"] || !names["cc-demo-2"] {
+		t.Errorf("names = %v, want cc-demo and cc-demo-2", names)
+	}
+}
+
+func TestUpSuffixesPastTheSecond(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	for i := 0; i < 3; i++ {
+		if err := cmdUp(a, []string{"-detach", dir}); err != nil {
+			t.Fatalf("up %d: %v", i+1, err)
+		}
+	}
+	machines, _ := f.List(a.ctx)
+	if len(machines) != 3 {
+		t.Fatalf("got %d machines, want 3", len(machines))
+	}
+	found := false
+	for _, m := range machines {
+		if m.Name == "cc-demo-3" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("third machine is not cc-demo-3")
+	}
+}
+
+// --detach must not enter a session, so it stays usable for scripting and for
+// starting several at once.
+func TestUpDetachReturnsWithoutEnteringASession(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, out, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	if err := cmdUp(a, []string{"-detach", dir}); err != nil {
+		t.Fatalf("cmdUp: %v", err)
+	}
+	if !strings.Contains(out.String(), "ccvm attach cc-demo") {
+		t.Errorf("out = %q, want it to say how to enter the session", out.String())
+	}
+	// The machine survives, since nothing ended a session.
+	machines, _ := f.List(a.ctx)
+	if len(machines) != 1 {
+		t.Errorf("got %d machines, want the detached one still running", len(machines))
 	}
 }

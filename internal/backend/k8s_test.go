@@ -374,3 +374,35 @@ func containsArg(argv []string, want string) bool {
 }
 
 var _ = os.Getenv
+
+// kubectl's default when nothing is configured is localhost:8080, so a refused
+// connection there means "no cluster" rather than "a cluster that is down".
+// Treating it as a failure makes every ccvm ls on a machine without kubernetes
+// print a page of klog output.
+func TestK8sUnreachableDefaultServerIsUnconfigured(t *testing.T) {
+	k, f := newK8s(t)
+	f.OnContaining("kubectl", "get", "jobs").Fail(1,
+		"The connection to the server localhost:8080 was refused - did you specify the right host or port?")
+
+	_, err := k.List(context.Background())
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !errorsIs(err, backend.ErrNotConfigured) {
+		t.Errorf("err = %v, want ErrNotConfigured so listing stays quiet", err)
+	}
+}
+
+// A real cluster that is genuinely broken must still be reported.
+func TestK8sRealFailureIsNotSilenced(t *testing.T) {
+	k, f := newK8s(t)
+	f.OnContaining("kubectl", "get", "jobs").Fail(1, "error: forbidden: User cannot list jobs")
+
+	_, err := k.List(context.Background())
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if errorsIs(err, backend.ErrNotConfigured) {
+		t.Errorf("err = %v, want a real failure reported rather than silenced", err)
+	}
+}

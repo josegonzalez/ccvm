@@ -444,11 +444,26 @@ func (k *K8s) Destroy(ctx context.Context, h Handle) error {
 	return err
 }
 
+// isNoKubeContext reports whether kubectl is simply not pointed at a cluster.
+//
+// A refused connection to localhost:8080 counts: that is kubectl's built-in
+// default when nothing is configured, so it means "no cluster" rather than "a
+// cluster that is down". Treating it as a failure makes every `ccvm ls` on a
+// machine without kubernetes print a page of klog output.
 func isNoKubeContext(err error) bool {
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "no configuration has been provided") ||
-		strings.Contains(msg, "current-context is not set") ||
-		strings.Contains(msg, "no context")
+	for _, pattern := range []string{
+		"no configuration has been provided",
+		"current-context is not set",
+		"no context",
+		"localhost:8080 was refused",
+		"connection to the server localhost:8080",
+	} {
+		if strings.Contains(msg, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 func init() {

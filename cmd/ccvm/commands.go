@@ -84,7 +84,7 @@ func (a *app) listAll(includeUnowned bool) ([]backend.Machine, error) {
 				// Say nothing about a backend the user never configured;
 				// complain about one they did.
 				if !errors.Is(err, backend.ErrNotConfigured) {
-					fmt.Fprintf(a.err, "ccvm: %s backend unavailable: %v\n", name, err)
+					fmt.Fprintf(a.err, "ccvm: %s backend unavailable: %s\n", name, condense(err))
 				}
 				return nil
 			}
@@ -498,6 +498,47 @@ func cmdCreds(a *app, args []string) error {
 		return fmt.Errorf("no usable Claude credential; sessions will not be able to authenticate")
 	}
 	return nil
+}
+
+// condense reduces a tool's error to the line worth reading.
+//
+// kubectl repeats the same klog line five times before saying anything useful,
+// and a listing that dumps all of it on every invocation is unusable. The
+// signal is the last line that is not a log record.
+func condense(err error) string {
+	lines := strings.Split(strings.TrimSpace(err.Error()), "\n")
+	best := lines[0]
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if l == "" || isLogLine(l) {
+			continue
+		}
+		best = l
+	}
+	const max = 200
+	if len(best) > max {
+		best = best[:max] + "…"
+	}
+	return best
+}
+
+// isLogLine matches klog's severity-and-timestamp prefix, such as
+// "E0830 04:16:25.195915   44618 memcache.go:265]".
+func isLogLine(s string) bool {
+	if len(s) < 6 {
+		return false
+	}
+	switch s[0] {
+	case 'E', 'I', 'W', 'F':
+	default:
+		return false
+	}
+	for _, r := range s[1:5] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func firstLine(s string) string {
