@@ -195,7 +195,19 @@ func (a *app) stageProfile(name string) (dir string, cleanup func(), err error) 
 		return local, func() {}, nil
 	}
 
-	tmp, err := os.MkdirTemp("", "ccvm-profile-"+name+"-")
+	// Deliberately not the system temp dir. TMPDIR is /var/folders on macOS but
+	// /tmp on Linux, and orbctl push resolves a /tmp source against the guest's
+	// per-boot tmpfs rather than the host, reporting success and copying
+	// nothing. Staging under the user cache dir is the same path everywhere.
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return "", nil, fmt.Errorf("no user cache dir to stage the profile build in: %w", err)
+	}
+	base := filepath.Join(cache, "ccvm", "build")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		return "", nil, err
+	}
+	tmp, err := os.MkdirTemp(base, "ccvm-profile-"+name+"-")
 	if err != nil {
 		return "", nil, err
 	}
