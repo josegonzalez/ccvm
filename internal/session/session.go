@@ -31,7 +31,22 @@ type Session struct {
 	// TTL is either a Go duration ("12h") or Keep. An empty value defers to the
 	// reaper's fallback, so a machine written by an older ccvm still ages out.
 	TTL string `toml:"ttl"`
+
+	// AuthMode records which credential the session holds: "token", "login",
+	// or "none".
+	//
+	// A login is not copyable. Refreshing it rotates the refresh token and
+	// invalidates every other copy, so ccvm has to know which machine currently
+	// holds it — see HoldsLogin.
+	AuthMode string `toml:"auth_mode"`
 }
+
+// HoldsLogin reports whether this session holds the shared claude.ai login.
+//
+// Verified behaviour, not caution: when one holder refreshes, every other copy
+// of that credential stops working, including the one on the host. Only one
+// session may hold it at a time.
+func (s Session) HoldsLogin() bool { return s.AuthMode == "login" }
 
 // Marshal renders the session for writing into a guest.
 func Marshal(s Session) ([]byte, error) {

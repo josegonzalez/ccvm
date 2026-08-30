@@ -113,6 +113,11 @@ func cmdUp(a *app, args []string) error {
 		if err != nil {
 			return err
 		}
+		if cred.Mode == creds.Login {
+			if err := a.checkLoginIsFree(); err != nil {
+				return err
+			}
+		}
 	}
 	if *remoteCtl && *yolo {
 		fmt.Fprintln(a.err, "ccvm: warning: --remote-control with --yolo gives a session that bypasses\n"+
@@ -222,7 +227,7 @@ func cmdUp(a *app, args []string) error {
 		}
 	}
 
-	if err := a.writeSessionRecord(b, handle, spec); err != nil {
+	if err := a.writeSessionRecord(b, handle, spec, cred); err != nil {
 		unwind()
 		return &Fault{
 			Backend: chosen, Step: "write the session record", Cause: err,
@@ -295,8 +300,24 @@ func (a *app) uniqueName(projectDir string) (string, error) {
 // that is already running.
 func (a *app) teardownAfterSession(b backend.Backend, h backend.Handle, spec backend.Spec) error {
 	keep := spec.Keep
+	holdsLogin := false
 	if rec, err := a.readSessionFrom(b, h); err == nil {
 		keep = rec.Kept()
+		holdsLogin = rec.HoldsLogin()
+	}
+
+	// A session that refreshed the login holds the only working copy, so it has
+	// to come back before the machine goes away. Without this, one session ends
+	// and the next cannot authenticate at all.
+	if holdsLogin {
+		if err := a.reclaimLogin(b, h); err != nil {
+			fmt.Fprintf(a.err, "ccvm: could not reclaim the claude.ai login from %s: %v\n"+
+				"      Recover it with `ccvm creds import %s` before destroying the machine.\n",
+				spec.Name, err, spec.Name)
+			if !keep {
+				return fmt.Errorf("refusing to destroy %s while it may hold the only working login", spec.Name)
+			}
+		}
 	}
 
 	if keep {
@@ -311,6 +332,27 @@ func (a *app) teardownAfterSession(b backend.Backend, h backend.Handle, spec bac
 		fmt.Fprintf(a.err, "ccvm: remove ssh entry for %s: %v\n", spec.Name, err)
 	}
 	fmt.Fprintf(a.out, "destroyed %s\n", spec.Name)
+	return nil
+}
+
+// reclaimLogin copies a possibly-rotated claude.ai login back to the host.
+//
+// The credential is movable, not copyable: whichever machine last refreshed it
+// holds the only version that works.
+func (a *app) reclaimLogin(b backend.Backend, h backend.Handle) error {
+	dst := filepath.Join(a.home, ".config", "ccvm", "credentials.json")
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return err
+	}
+	if err := b.Pull(a.ctx, h, creds.GuestCredentialsFile, dst); err != nil {
+		return err
+	}
+	if err := os.Chmod(dst, 0o600); err != nil {
+		return err
+	}
+	if _, err := creds.ExpiresAt(dst); err != nil {
+		return fmt.Errorf("what came back is not a usable login: %w", err)
+	}
 	return nil
 }
 
@@ -377,6 +419,35 @@ func (a *app) installSSHKey(b backend.Backend, h backend.Handle) error {
 	}
 	if _, err := b.Exec(a.ctx, h, "chmod", "600", dir+"/authorized_keys"); err != nil {
 		return err
+	}
+	return nil
+}
+
+// checkLoginIsFree refuses a second concurrent holder of the claude.ai login.
+//
+// The login cannot be shared. Refreshing it rotates the refresh token and every
+// other copy stops working — measured, not assumed: one session refreshing
+// invalidated two siblings, the broker, and the host's own copy. Serial use is
+// fine because teardown carries the rotated credential back.
+func (a *app) checkLoginIsFree() error {
+	machines, err := a.listAll(true)
+	if err != nil {
+		// A backend being unreachable should not block starting a session; the
+		// cost of a false negative here is the error the user would have got
+		// anyway, hours later.
+		return nil
+	}
+	for _, m := range machines {
+		rec, err := a.readSession(m)
+		if err != nil || !rec.HoldsLogin() {
+			continue
+		}
+		return fmt.Errorf(
+			"%s already holds the claude.ai login, and it cannot be shared.\n"+
+				"When one session refreshes the token, every other copy stops working — including this one.\n"+
+				"End it first (`ccvm rm %s`), reattach to it (`ccvm attach %s`), "+
+				"or start this session without Remote Control by dropping --remote-control",
+			m.Name, m.Name, m.Name)
 	}
 	return nil
 }
@@ -493,7 +564,7 @@ func loadOverlay(path string, scope profile.Scope) (*profile.Config, error) {
 	return profile.Parse(path, data, scope)
 }
 
-func (a *app) writeSessionRecord(b backend.Backend, h backend.Handle, spec backend.Spec) error {
+func (a *app) writeSessionRecord(b backend.Backend, h backend.Handle, spec backend.Spec, cred creds.Source) error {
 	rec := session.Session{
 		Name:     spec.Name,
 		Backend:  b.Name(),
@@ -503,6 +574,7 @@ func (a *app) writeSessionRecord(b backend.Backend, h backend.Handle, spec backe
 		CodeMode: spec.CodeMode,
 		Created:  spec.CreatedAt,
 		TTL:      spec.TTL,
+		AuthMode: string(cred.Mode),
 	}
 	data, err := session.Marshal(rec)
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/josegonzalez/ccvm/internal/backend"
 	"github.com/josegonzalez/ccvm/internal/backendtest"
+	"github.com/josegonzalez/ccvm/internal/creds"
 	"github.com/josegonzalez/ccvm/internal/session"
 	"github.com/josegonzalez/ccvm/internal/sshcfg"
 )
@@ -618,5 +619,138 @@ func TestUpNoCredentialConflictsWithRemoteControl(t *testing.T) {
 	}
 	if f.CreateCalls != 0 {
 		t.Error("a machine was created despite contradictory flags")
+	}
+}
+
+func withLogin(t *testing.T) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "credentials.json")
+	body := `{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","refreshTokenExpiresAt":` +
+		strconv.FormatInt(time.Now().Add(720*time.Hour).UnixMilli(), 10) + `}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CCVM_CREDENTIALS_FILE", path)
+}
+
+// Measured, not assumed: one session refreshing the shared login invalidated
+// two siblings, the broker, and the host's own copy. So a second concurrent
+// holder must be refused rather than silently created.
+func TestUpRefusesASecondRemoteControlSession(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+	withLogin(t)
+
+	if err := cmdUp(a, []string{"-detach", "-remote-control", dir}); err != nil {
+		t.Fatalf("first session: %v", err)
+	}
+
+	err := cmdUp(a, []string{"-detach", "-remote-control", dir})
+	if err == nil {
+		t.Fatal("a second concurrent Remote Control session was allowed")
+	}
+	if !strings.Contains(err.Error(), "cannot be shared") {
+		t.Errorf("err = %v, want it to explain why", err)
+	}
+	if !strings.Contains(err.Error(), "cc-demo") {
+		t.Errorf("err = %v, want it to name the holder", err)
+	}
+}
+
+// The token path has no such constraint, so it must not inherit the guard.
+func TestUpAllowsConcurrentTokenSessions(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	for i := 0; i < 3; i++ {
+		if err := cmdUp(a, []string{"-detach", dir}); err != nil {
+			t.Fatalf("session %d: %v", i+1, err)
+		}
+	}
+	machines, _ := f.List(a.ctx)
+	if len(machines) != 3 {
+		t.Errorf("got %d machines, want 3 concurrent token sessions", len(machines))
+	}
+}
+
+// A Remote Control session is allowed once the previous holder is gone, since
+// teardown carries the rotated credential back.
+func TestUpAllowsRemoteControlAfterTheHolderIsDestroyed(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+	withLogin(t)
+
+	if err := cmdUp(a, []string{"-detach", "-remote-control", dir}); err != nil {
+		t.Fatalf("first session: %v", err)
+	}
+	if err := cmdRm(a, []string{"cc-demo"}); err != nil {
+		t.Fatalf("rm: %v", err)
+	}
+	if err := cmdUp(a, []string{"-detach", "-remote-control", dir}); err != nil {
+		t.Errorf("second session after the first was destroyed: %v", err)
+	}
+}
+
+// Whichever machine last refreshed holds the only working copy, so teardown has
+// to bring it back or the next session cannot authenticate at all.
+func TestTeardownReclaimsTheLogin(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+
+	rotated := `{"claudeAiOauth":{"accessToken":"new","refreshToken":"rotated","refreshTokenExpiresAt":` +
+		strconv.FormatInt(time.Now().Add(720*time.Hour).UnixMilli(), 10) + `}}`
+	rec, err := session.Marshal(session.Session{Name: "cc-demo", TTL: "12h", AuthMode: "login"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Seed(backend.Machine{Name: "cc-demo", State: backend.StateRunning}, map[string][]byte{
+		backend.SessionFile:        rec,
+		creds.GuestCredentialsFile: []byte(rotated),
+	})
+
+	h := backend.Handle{Backend: "docker", Name: "cc-demo", ID: "cc-demo"}
+	if err := a.teardownAfterSession(f, h, backend.Spec{Name: "cc-demo"}); err != nil {
+		t.Fatalf("teardown: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(a.home, ".config", "ccvm", "credentials.json"))
+	if err != nil {
+		t.Fatalf("the login was not reclaimed: %v", err)
+	}
+	if !strings.Contains(string(got), "rotated") {
+		t.Errorf("host credential = %s, want the rotated token brought back", got)
+	}
+	if len(f.Destroyed) != 1 {
+		t.Error("machine was not destroyed after the login was reclaimed")
+	}
+}
+
+// Destroying a machine that may hold the only working login would strand the
+// credential, so it must refuse rather than proceed.
+func TestTeardownRefusesToDestroyWhenTheLoginCannotBeReclaimed(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, errOut := newTestApp(t, f)
+
+	rec, err := session.Marshal(session.Session{Name: "cc-demo", TTL: "12h", AuthMode: "login"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The record says it holds the login, but the credential is not there.
+	f.Seed(backend.Machine{Name: "cc-demo", State: backend.StateRunning},
+		map[string][]byte{backend.SessionFile: rec})
+
+	h := backend.Handle{Backend: "docker", Name: "cc-demo", ID: "cc-demo"}
+	err = a.teardownAfterSession(f, h, backend.Spec{Name: "cc-demo"})
+	if err == nil {
+		t.Fatal("destroyed a machine that may hold the only working login")
+	}
+	if len(f.Destroyed) != 0 {
+		t.Error("the machine was destroyed anyway")
+	}
+	if !strings.Contains(errOut.String(), "creds import") {
+		t.Errorf("stderr = %q, want the recovery command", errOut.String())
 	}
 }

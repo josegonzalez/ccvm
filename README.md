@@ -86,6 +86,20 @@ code; the restriction stops one choosing the image your session runs.
 sentinel file and something already holding credentials acts on it. A machine
 that could destroy machines could destroy ones that are not its own.
 
+**A claude.ai login cannot be shared, so `--remote-control` is one session at a
+time.** This is measured, not cautious: refreshing the token rotates it, and
+every other copy stops working. In testing, one session refreshing invalidated
+two sibling sessions, the broker machine, and the host's own stored copy —
+all with `OAuth session expired and could not be refreshed`, hours after the
+sessions started.
+
+ccvm therefore treats the login as movable rather than copyable. Starting a
+second concurrent `--remote-control` session is refused, and ending one carries
+the possibly-rotated credential back to the host so the next session can use it.
+If a machine holding the login is lost before that happens, recover with
+`ccvm creds import <machine>`. The default token path has no such constraint —
+run as many concurrent sessions as you like.
+
 **`ccvm keep` exempts a machine from the reaper, not from its backend.** Docker
 fixes auto-remove when a container is created, so a machine started without
 `--keep` will still be deleted if it stops. `ccvm keep` says so rather than
