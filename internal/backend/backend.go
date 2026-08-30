@@ -4,6 +4,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 )
@@ -158,6 +159,13 @@ type EphemeralReporter interface {
 	// AutoRemoves reports whether the machine will be deleted on stop.
 	AutoRemoves(ctx context.Context, h Handle) (bool, error)
 }
+
+// ErrNotConfigured marks a backend that has not been set up on this machine, as
+// opposed to one that is set up but unreachable.
+//
+// The difference matters for tone: `ccvm ls` should say nothing about a backend
+// you never configured, and should complain loudly about one you did.
+var ErrNotConfigured = errors.New("not configured")
 
 // Stopper is implemented by backends that can halt a machine without destroying
 // it. The reaper needs this to exist for `ccvm keep` to mean anything: a

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -79,7 +80,11 @@ func (a *app) listAll(includeUnowned bool) ([]backend.Machine, error) {
 			b := a.backends[name]
 			ms, err := b.List(a.ctx)
 			if err != nil {
-				fmt.Fprintf(a.err, "ccvm: %s backend unavailable: %v\n", name, err)
+				// Say nothing about a backend the user never configured;
+				// complain about one they did.
+				if !errors.Is(err, backend.ErrNotConfigured) {
+					fmt.Fprintf(a.err, "ccvm: %s backend unavailable: %v\n", name, err)
+				}
 				return nil
 			}
 			results[i] = ms
@@ -481,7 +486,13 @@ func cmdDoctor(a *app, args []string) error {
 
 		if err := b.Preflight(a.ctx, s); err != nil {
 			failures++
-			fmt.Fprintf(a.out, "%-9s unavailable: %v\n", name, err)
+			// The error already says whether it is unconfigured or merely
+			// unreachable; prefixing a label here would say it twice.
+			if errors.Is(err, backend.ErrNotConfigured) {
+				fmt.Fprintf(a.out, "%-9s %v\n", name, err)
+			} else {
+				fmt.Fprintf(a.out, "%-9s unavailable: %v\n", name, err)
+			}
 			continue
 		}
 		fmt.Fprintf(a.out, "%-9s ready\n", name)

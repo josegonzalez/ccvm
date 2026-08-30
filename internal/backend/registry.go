@@ -24,6 +24,17 @@ type Config struct {
 	ProxmoxStorage string
 	// ProxmoxInsecure skips TLS verification, for a homelab CA.
 	ProxmoxInsecure bool
+	// ProxmoxBridge is the network bridge guests attach to.
+	ProxmoxBridge string
+	// ProxmoxSubnet and ProxmoxGateway define the reserved range guests get
+	// deterministic addresses from, e.g. "10.10.0" and "10.10.0.1".
+	ProxmoxSubnet  string
+	ProxmoxGateway string
+	// ProxmoxVMIDBase anchors the vmid-to-address mapping. A guest's host octet
+	// is vmid minus this.
+	ProxmoxVMIDBase int
+	// ProxmoxSSHKey is the identity used to reach guests.
+	ProxmoxSSHKey string
 
 	// KubeNamespace is where session Jobs are created.
 	KubeNamespace string

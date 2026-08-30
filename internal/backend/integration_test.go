@@ -11,6 +11,7 @@ package backend_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +44,19 @@ func probeFor(name string, b backend.Backend) func() error {
 	return func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+
+		// In the control-plane tier there is no template to check against, so
+		// the probe asks only whether the API answers and authenticates.
+		// Demanding a template here would fail every run for the one condition
+		// this tier cannot satisfy.
+		if controlPlaneOnly(name) {
+			p, ok := b.(*backend.Proxmox)
+			if !ok {
+				return fmt.Errorf("control-plane mode is only defined for proxmox")
+			}
+			_, err := p.PickNodeForTest(ctx)
+			return err
+		}
 		return b.Preflight(ctx, backend.Spec{Profile: "base", Image: imageFor(name)})
 	}
 }
@@ -426,6 +440,9 @@ func TestKeepControlsDurability(t *testing.T) {
 // Preflight must not create anything, or `ccvm doctor` has side effects.
 func TestPreflightCreatesNothing(t *testing.T) {
 	eachBackend(t, func(t *testing.T, name string, b backend.Backend) {
+		if controlPlaneOnly(name) {
+			t.Skip("no template exists in the control-plane tier")
+		}
 		ctx := testCtx(t)
 		before, err := b.List(ctx)
 		if err != nil {
@@ -462,6 +479,69 @@ func TestPreflightRejectsMissingImage(t *testing.T) {
 		}
 		if strings.TrimSpace(err.Error()) == "" {
 			t.Error("Preflight failed with an empty message")
+		}
+	})
+}
+
+// --------------------------------------------------------------- proxmox
+
+// Proxmox is the one backend whose control plane can be exercised in CI
+// without a hypervisor. These assertions are what frozen httptest fixtures
+// cannot make: fixtures keep passing against a Proxmox release that changed a
+// response shape, and only a real pvedaemon notices.
+func TestProxmoxControlPlane(t *testing.T) {
+	if !itest.IsRequested("proxmox") {
+		t.Skip("proxmox not requested")
+	}
+	b, err := backend.New("proxmox", run.New(testLogger{t}), configFromEnv())
+	if err != nil {
+		t.Fatalf("build proxmox backend: %v", err)
+	}
+	itest.Gate(t, "proxmox", probeFor("proxmox", b))
+
+	p, ok := b.(*backend.Proxmox)
+	if !ok {
+		t.Fatalf("expected *backend.Proxmox, got %T", b)
+	}
+	ctx := testCtx(t)
+
+	t.Run("nextid returns a usable vmid", func(t *testing.T) {
+		id, err := p.NextIDForTest(ctx)
+		if err != nil {
+			t.Fatalf("nextid: %v", err)
+		}
+		if id <= 0 {
+			t.Errorf("nextid = %d", id)
+		}
+	})
+
+	t.Run("cluster reports an online node", func(t *testing.T) {
+		node, err := p.PickNodeForTest(ctx)
+		if err != nil {
+			t.Fatalf("pick node: %v", err)
+		}
+		if node == "" {
+			t.Error("no node chosen")
+		}
+	})
+
+	// List must not error against a real cluster even when nothing is tagged;
+	// an empty result and a failure are very different things.
+	t.Run("list succeeds with no ccvm guests", func(t *testing.T) {
+		if _, err := b.List(ctx); err != nil {
+			t.Fatalf("List: %v", err)
+		}
+	})
+
+	// A missing template is the most common misconfiguration, and the message
+	// has to name it rather than failing somewhere downstream.
+	t.Run("missing template is named", func(t *testing.T) {
+		err := b.Preflight(ctx, backend.Spec{Profile: "base", Image: "999999"})
+		if err == nil {
+			t.Fatal("Preflight accepted a template vmid that does not exist")
+		}
+		if !strings.Contains(err.Error(), "999999") {
+			t.Errorf("err = %v, want it to name the missing template", err)
 		}
 	})
 }

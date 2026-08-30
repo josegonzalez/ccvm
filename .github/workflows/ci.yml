@@ -140,21 +140,36 @@ jobs:
           go-version-file: go.mod
       - name: Start containerized Proxmox VE
         run: |
-          # TODO: pin by digest before relying on this.
-          docker run -d --name pve --privileged \
-            -p 8006:8006 ghcr.io/longqt-sea/proxmox-ve:latest
-          for i in $(seq 1 60); do
-            if curl -sk https://localhost:8006/api2/json/version >/dev/null; then
-              echo "pve up after ${i}s"; exit 0
+          # Pinned by digest: this is someone else's repackaging of a distro,
+          # and an unpinned tag can change what the job tests without notice.
+          docker run -d --name pve --privileged -p 8006:8006 \
+            ghcr.io/longqt-sea/proxmox-ve@${PVE_DIGEST}
+          for i in $(seq 1 120); do
+            if curl -sk https://localhost:8006/api2/json/ >/dev/null 2>&1; then
+              echo "pve API answering after ${i}s"; exit 0
             fi
             sleep 1
           done
           echo "::warning::containerized PVE did not come up"; exit 1
+        env:
+          PVE_DIGEST: sha256:197347a874b9fd54966e11eeb5c5d053ac5fee41eb4dc1190ac9545d6db8cbc2
+      - name: Mint an API token
+        id: pve-token
+        run: |
+          secret=$(docker exec pve pveum user token add root@pam ccvm --privsep 0 \
+            --output-format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+          echo "::add-mask::$secret"
+          echo "secret=$secret" >> "$GITHUB_OUTPUT"
       - name: Integration tests
         env:
           CCVM_ITEST_BACKENDS: proxmox
           CCVM_ITEST_PROXMOX_URL: https://localhost:8006
-          # Guest boot needs a real hypervisor; this tier covers the API only.
+          CCVM_ITEST_PROXMOX_TOKEN_ID: root@pam!ccvm
+          CCVM_ITEST_PROXMOX_SECRET: ${{ steps.pve-token.outputs.secret }}
+          CCVM_ITEST_PROXMOX_INSECURE: "1"
+          # Hosted runners have no nested virtualization, so guest boot is out
+          # of reach. This tier exercises the control plane, which is what
+          # frozen fixtures cannot: they never notice an upstream API change.
           CCVM_ITEST_PROXMOX_CONTROL_PLANE_ONLY: "1"
         run: go test -tags=integration -count=1 -timeout 20m ./...
       - if: always()
