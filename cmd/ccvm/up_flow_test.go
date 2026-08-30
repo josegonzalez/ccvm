@@ -754,3 +754,19 @@ func TestTeardownRefusesToDestroyWhenTheLoginCannotBeReclaimed(t *testing.T) {
 		t.Errorf("stderr = %q, want the recovery command", errOut.String())
 	}
 }
+
+// The broker needs a fixed name so it can be found again, rather than one
+// derived from whatever directory it was built from.
+func TestUpNameOverride(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	if err := cmdUp(a, []string{"-detach", "-no-credential", "-name-override", "cc-broker", dir}); err != nil {
+		t.Fatalf("cmdUp: %v", err)
+	}
+	machines, _ := f.List(a.ctx)
+	if len(machines) != 1 || machines[0].Name != "cc-broker" {
+		t.Errorf("machines = %v, want the overridden name", machines)
+	}
+}

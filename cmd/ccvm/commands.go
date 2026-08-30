@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -12,6 +13,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/josegonzalez/ccvm/internal/attach"
 	"github.com/josegonzalez/ccvm/internal/backend"
 	"github.com/josegonzalez/ccvm/internal/creds"
 	"github.com/josegonzalez/ccvm/internal/profile"
@@ -484,8 +486,15 @@ func cmdCreds(a *app, args []string) error {
 				"where <machine> is a broker built with `ccvm up --no-credential` that you ran `/login` in")
 		}
 		return a.credsImport(args[0])
+	case "renew":
+		fs := newFlags("creds renew", a)
+		backendName := fs.String("backend", "orbstack", "backend to build the broker on")
+		if err := fs.Parse(args); err != nil {
+			return errUsage
+		}
+		return a.credsRenew(*backendName)
 	default:
-		return fmt.Errorf("unknown subcommand %q; try check or import", sub)
+		return fmt.Errorf("unknown subcommand %q; try check, import, or renew", sub)
 	}
 
 	// Report both paths, because which one a session gets depends on a flag
@@ -565,6 +574,108 @@ func isLogLine(s string) bool {
 		}
 	}
 	return true
+}
+
+// BrokerName is the machine claude.ai logins are minted in.
+const BrokerName = "cc-broker"
+
+// credsRenew mints a fresh claude.ai login and brings it back.
+//
+// A login lasts about a month, and renewing it means an interactive browser
+// sign-in that cannot be scripted. What can be removed is everything around it:
+// finding or building somewhere to sign in, and remembering to import the
+// result afterwards.
+//
+// The broker is deliberately not kept in sync with the live credential. A
+// second copy is exactly what breaks: whichever copy refreshes first
+// invalidates the rest. The broker holds a credential only in the moment
+// between signing in and importing.
+func (a *app) credsRenew(backendName string) error {
+	b, err := a.backend(backendName)
+	if err != nil {
+		return err
+	}
+
+	machines, err := a.listAll(true)
+	if err != nil {
+		return err
+	}
+	var broker *backend.Machine
+	for i := range machines {
+		if machines[i].Name == BrokerName {
+			broker = &machines[i]
+			break
+		}
+	}
+
+	if broker == nil {
+		fmt.Fprintf(a.out, "building %s on %s\n", BrokerName, backendName)
+		if err := a.buildBroker(backendName); err != nil {
+			return err
+		}
+		machines, err = a.listAll(true)
+		if err != nil {
+			return err
+		}
+		for i := range machines {
+			if machines[i].Name == BrokerName {
+				broker = &machines[i]
+				break
+			}
+		}
+		if broker == nil {
+			return fmt.Errorf("built %s but it is not listed", BrokerName)
+		}
+	} else if broker.State != backend.StateRunning {
+		if s, ok := b.(interface {
+			Start(ctx context.Context, h backend.Handle) error
+		}); ok {
+			fmt.Fprintf(a.out, "starting %s\n", BrokerName)
+			if err := s.Start(a.ctx, broker.Handle()); err != nil {
+				return fmt.Errorf("start %s: %w", BrokerName, err)
+			}
+			if err := b.Wait(a.ctx, broker.Handle()); err != nil {
+				return fmt.Errorf("wait for %s: %w", BrokerName, err)
+			}
+		}
+	}
+
+	// A credential left over from a previous login would let Claude start
+	// without prompting, and the import would then bring back the old one.
+	if _, err := b.Exec(a.ctx, broker.Handle(), "rm", "-f", creds.GuestCredentialsFile); err != nil {
+		fmt.Fprintf(a.err, "ccvm: could not clear the previous login: %v\n", err)
+	}
+
+	target := broker.SSH
+	if target == "" {
+		target = broker.Name
+	}
+
+	fmt.Fprintln(a.out, "")
+	fmt.Fprintln(a.out, "Claude is about to open in the broker machine.")
+	fmt.Fprintln(a.out, "Run /login, approve in the browser, then exit with Ctrl-D.")
+	fmt.Fprintln(a.out, "")
+
+	if err := attach.Shell(attach.Options{
+		Target:       target,
+		IdentityFile: a.sshKey.Private,
+	}, "claude"); err != nil {
+		return fmt.Errorf("open Claude in %s: %w", BrokerName, err)
+	}
+
+	return a.credsImport(BrokerName)
+}
+
+// buildBroker creates the machine logins are minted in. It gets no credential,
+// since it is the machine that produces one.
+func (a *app) buildBroker(backendName string) error {
+	home := a.home
+	return cmdUp(a, []string{
+		"-detach", "-keep", "-no-credential",
+		"-backend", backendName,
+		"-name-override", BrokerName,
+		home,
+	})
 }
 
 // credsImport copies a claude.ai login out of a broker machine.

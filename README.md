@@ -100,6 +100,12 @@ If a machine holding the login is lost before that happens, recover with
 `ccvm creds import <machine>`. The default token path has no such constraint —
 run as many concurrent sessions as you like.
 
+A login lasts about a month. `ccvm creds renew` builds or starts a broker
+machine, opens Claude in it for you to run `/login`, and imports the result when
+you exit. The broker is deliberately not kept in sync with the live credential:
+a second copy is the thing that breaks, so it holds one only in the moment
+between signing in and importing.
+
 **`ccvm keep` exempts a machine from the reaper, not from its backend.** Docker
 fixes auto-remove when a container is created, so a machine started without
 `--keep` will still be deleted if it stops. `ccvm keep` says so rather than

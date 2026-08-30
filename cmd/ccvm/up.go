@@ -30,17 +30,18 @@ var validCodeModes = map[string][]string{
 func cmdUp(a *app, args []string) error {
 	fs := newFlags("up", a)
 	var (
-		backendName = fs.String("backend", "", "docker, orbstack, proxmox, or k8s")
-		profileName = fs.String("profile", "base", "profile to build the machine from")
-		codeMode    = fs.String("code", "", "mount, rsync, git, or sshfs")
-		keep        = fs.Bool("keep", false, "leave the machine running after the session ends")
-		yolo        = fs.Bool("yolo", false, "run Claude with --dangerously-skip-permissions")
-		useVM       = fs.Bool("vm", false, "proxmox only: use the VM template instead of LXC")
-		remoteCtl   = fs.Bool("remote-control", false, "use a claude.ai login so the session can be driven from claude.ai or your phone")
-		install     = fs.String("install", "", "extra packages to install at spawn, comma separated")
-		dryRun      = fs.Bool("dry-run", false, "resolve and preflight without creating anything")
-		detach      = fs.Bool("detach", false, "provision and return instead of entering the session")
-		noCred      = fs.Bool("no-credential", false, "provision without installing a Claude credential, for building a broker machine")
+		backendName  = fs.String("backend", "", "docker, orbstack, proxmox, or k8s")
+		profileName  = fs.String("profile", "base", "profile to build the machine from")
+		codeMode     = fs.String("code", "", "mount, rsync, git, or sshfs")
+		keep         = fs.Bool("keep", false, "leave the machine running after the session ends")
+		yolo         = fs.Bool("yolo", false, "run Claude with --dangerously-skip-permissions")
+		useVM        = fs.Bool("vm", false, "proxmox only: use the VM template instead of LXC")
+		remoteCtl    = fs.Bool("remote-control", false, "use a claude.ai login so the session can be driven from claude.ai or your phone")
+		install      = fs.String("install", "", "extra packages to install at spawn, comma separated")
+		dryRun       = fs.Bool("dry-run", false, "resolve and preflight without creating anything")
+		detach       = fs.Bool("detach", false, "provision and return instead of entering the session")
+		noCred       = fs.Bool("no-credential", false, "provision without installing a Claude credential, for building a broker machine")
+		nameOverride = fs.String("name-override", "", "use this machine name instead of deriving one from the project")
 	)
 	if err := fs.Parse(args); err != nil {
 		return errUsage
@@ -77,9 +78,11 @@ func cmdUp(a *app, args []string) error {
 		return fmt.Errorf("profile %q: %w", *profileName, err)
 	}
 
-	name, err := a.uniqueName(projectDir)
-	if err != nil {
-		return err
+	name := *nameOverride
+	if name == "" {
+		if name, err = a.uniqueName(projectDir); err != nil {
+			return err
+		}
 	}
 
 	spec := backend.Spec{

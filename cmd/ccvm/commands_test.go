@@ -509,3 +509,30 @@ func TestCredsImportExplainsAMissingLogin(t *testing.T) {
 		t.Errorf("err = %v, want it to say what is missing", err)
 	}
 }
+
+// The broker holds a credential only between signing in and importing. A stale
+// one left over would let Claude start without prompting, and the import would
+// then bring back the old credential rather than the new one.
+func TestCredsRenewClearsThePreviousLoginFirst(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+
+	stale := `{"claudeAiOauth":{"refreshToken":"stale","refreshTokenExpiresAt":1}}`
+	f.Seed(backend.Machine{Name: BrokerName, State: backend.StateRunning},
+		map[string][]byte{creds.GuestCredentialsFile: []byte(stale)})
+
+	// attach.Shell will fail without a real host; the clearing must happen
+	// before that, which is the ordering under test.
+	_ = a.credsRenew("docker")
+
+	if !f.Ran("rm", "-f", creds.GuestCredentialsFile) {
+		t.Errorf("the previous login was not cleared before sign-in\ncalls: %v", f.ExecCalls())
+	}
+}
+
+func TestCredsRenewUnknownBackend(t *testing.T) {
+	a, _, _ := newTestApp(t, backendtest.NewFake("docker"))
+	if err := a.credsRenew("frobnicate"); err == nil {
+		t.Fatal("expected an error")
+	}
+}
