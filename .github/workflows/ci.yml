@@ -45,9 +45,14 @@ jobs:
             git diff --stat
             exit 1
           fi
+      # goinstall rather than the default prebuilt binary. golangci-lint
+      # refuses to load a config whose target Go version is newer than the one
+      # it was built with, and a release binary lags go.mod; building it with
+      # the toolchain set up above cannot drift.
       - uses: golangci/golangci-lint-action@v9
         with:
           version: latest
+          install-mode: goinstall
 
   test:
     # macOS is not optional: ccvm manipulates a Mac's SSH config, ports, and
