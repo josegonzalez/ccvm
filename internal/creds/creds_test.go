@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -165,6 +166,27 @@ func TestExpiresAt(t *testing.T) {
 
 // The schema belongs to Claude Code and can change, so a missing expiry is not
 // an error — it just means ccvm cannot report one.
+// The access token expires in hours and is refreshed automatically. Reporting
+// it would call every healthy credential nearly expired.
+func TestExpiresAtReportsTheRefreshTokenNotTheAccessToken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials.json")
+	body := `{"claudeAiOauth":{"expiresAt":` +
+		strconv.FormatInt(time.Now().Add(8*time.Hour).UnixMilli(), 10) +
+		`,"refreshTokenExpiresAt":` +
+		strconv.FormatInt(time.Now().Add(29*24*time.Hour).UnixMilli(), 10) + `}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := creds.ExpiresAt(path)
+	if err != nil {
+		t.Fatalf("ExpiresAt: %v", err)
+	}
+	if days := int(time.Until(got).Hours() / 24); days < 28 {
+		t.Errorf("ExpiresAt reported %d days; it read the access token rather than the refresh token", days)
+	}
+}
+
 func TestExpiresAtToleratesMissingField(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "credentials.json")
 	if err := os.WriteFile(path, []byte(`{"somethingElse":true}`), 0o600); err != nil {
@@ -233,8 +255,12 @@ func writeLogin(t *testing.T, expires time.Time) string {
 	path := filepath.Join(t.TempDir(), "credentials.json")
 	body := map[string]any{
 		"claudeAiOauth": map[string]any{
-			"accessToken": "sk-ant-oat-abc",
-			"expiresAt":   expires.UnixMilli(),
+			"accessToken":  "sk-ant-oat-abc",
+			"refreshToken": "sk-ant-ort-abc",
+			// The access token lives hours; the refresh token is the
+			// credential's real lifetime.
+			"expiresAt":             time.Now().Add(8 * time.Hour).UnixMilli(),
+			"refreshTokenExpiresAt": expires.UnixMilli(),
 		},
 	}
 	data, err := json.Marshal(body)

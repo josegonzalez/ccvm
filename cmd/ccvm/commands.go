@@ -476,8 +476,16 @@ func cmdCreds(a *app, args []string) error {
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		sub, args = args[0], args[1:]
 	}
-	if sub != "check" {
-		return fmt.Errorf("unknown subcommand %q; try check", sub)
+	switch sub {
+	case "check":
+	case "import":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: ccvm creds import <machine>\n" +
+				"where <machine> is a broker built with `ccvm up --no-credential` that you ran `/login` in")
+		}
+		return a.credsImport(args[0])
+	default:
+		return fmt.Errorf("unknown subcommand %q; try check or import", sub)
 	}
 
 	// Report both paths, because which one a session gets depends on a flag
@@ -557,6 +565,68 @@ func isLogLine(s string) bool {
 		}
 	}
 	return true
+}
+
+// credsImport copies a claude.ai login out of a broker machine.
+//
+// The login cannot be minted on macOS, where the credential lives in the
+// Keychain rather than a file, so it has to come out of a Linux guest. Doing
+// that by hand means a shell pipeline that silently produces an unusable file
+// when the path is wrong, so the tool does it and checks the result.
+func (a *app) credsImport(machine string) error {
+	machines, err := a.listAll(true)
+	if err != nil {
+		return err
+	}
+
+	var found *backend.Machine
+	for i := range machines {
+		if machines[i].Name == machine {
+			found = &machines[i]
+			break
+		}
+	}
+	if found == nil {
+		return fmt.Errorf("no machine named %q; `ccvm ls` shows what is running", machine)
+	}
+
+	b, err := a.backend(found.Backend)
+	if err != nil {
+		return err
+	}
+
+	dst := filepath.Join(a.home, ".config", "ccvm", "credentials.json")
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return err
+	}
+
+	if err := b.Pull(a.ctx, found.Handle(), creds.GuestCredentialsFile, dst); err != nil {
+		return fmt.Errorf("read the login from %s: %w\n"+
+			"Run `claude` and `/login` inside it first: ccvm ssh %s", machine, err, machine)
+	}
+	// Pull carries the guest's mode, and a credential the rest of the machine
+	// can read is not one worth having.
+	if err := os.Chmod(dst, 0o600); err != nil {
+		return err
+	}
+
+	// Verify rather than trust: a wrong path yields a file that only fails
+	// later, at the point where a session cannot authenticate.
+	expiry, err := creds.ExpiresAt(dst)
+	if err != nil {
+		os.Remove(dst)
+		return fmt.Errorf("what came out of %s is not a usable login: %w", machine, err)
+	}
+
+	fmt.Fprintf(a.out, "imported the claude.ai login from %s to %s\n", machine, dst)
+	switch {
+	case expiry.IsZero():
+		fmt.Fprintln(a.out, "no expiry recorded")
+	default:
+		fmt.Fprintf(a.out, "expires in %d days\n", int(time.Until(expiry).Hours()/24))
+	}
+	fmt.Fprintln(a.out, "`ccvm up --remote-control` can now drive sessions from claude.ai and the phone app")
+	return nil
 }
 
 func firstLine(s string) string {

@@ -114,10 +114,16 @@ func resolveLogin(home string, env func(string) string) (Source, error) {
 }
 
 // credentialsFile is the shape ccvm reads. Claude Code owns this schema, so
-// only the expiry is parsed and a missing field is tolerated rather than fatal.
+// only the expiries are parsed and a missing field is tolerated rather than
+// fatal.
 type credentialsFile struct {
 	ClaudeAiOauth struct {
+		// ExpiresAt is the access token, which lives hours and is refreshed
+		// automatically. It is not how long the credential is good for.
 		ExpiresAt int64 `json:"expiresAt"`
+		// RefreshTokenExpiresAt is when the credential actually stops working,
+		// because no refresh can be made after it.
+		RefreshTokenExpiresAt int64 `json:"refreshTokenExpiresAt"`
 	} `json:"claudeAiOauth"`
 }
 
@@ -133,9 +139,14 @@ func validateLogin(path string) error {
 	return nil
 }
 
-// ExpiresAt reports when a login credential expires. The zero time means the
-// file carries no expiry ccvm recognizes, which is not an error: the schema
-// belongs to Claude Code and can change.
+// ExpiresAt reports when a login credential stops working.
+//
+// That is the refresh token's expiry, not the access token's. The access token
+// lives a few hours and is refreshed automatically, so reporting it would call
+// a healthy credential nearly expired every time.
+//
+// The zero time means the file carries no expiry ccvm recognizes, which is not
+// an error: the schema belongs to Claude Code and can change.
 func ExpiresAt(path string) (time.Time, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -145,11 +156,11 @@ func ExpiresAt(path string) (time.Time, error) {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return time.Time{}, fmt.Errorf("%s is not a valid credentials file: %w", path, err)
 	}
-	if c.ClaudeAiOauth.ExpiresAt == 0 {
+	if c.ClaudeAiOauth.RefreshTokenExpiresAt == 0 {
 		return time.Time{}, nil
 	}
-	// Claude Code records this in milliseconds.
-	return time.UnixMilli(c.ClaudeAiOauth.ExpiresAt), nil
+	// Claude Code records these in milliseconds.
+	return time.UnixMilli(c.ClaudeAiOauth.RefreshTokenExpiresAt), nil
 }
 
 // EnvFile renders the guest's /etc/ccvm/env.
