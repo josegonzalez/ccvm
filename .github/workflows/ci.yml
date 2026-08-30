@@ -53,7 +53,10 @@ jobs:
       - name: Coverage gate
         if: matrix.os == 'ubuntu-latest'
         run: |
-          total=$(go tool cover -func=coverage.out | awk '/^total:/ {print substr($3, 1, length($3)-1)}')
+          # backendtest exists to be imported by other packages' tests, so
+          # counting its statements measures nothing.
+          grep -v "internal/backendtest" coverage.out > coverage.shipped.out
+          total=$(go tool cover -func=coverage.shipped.out | awk '/^total:/ {print substr($3, 1, length($3)-1)}')
           echo "total coverage: ${total}%"
           awk -v t="$total" -v m="$COVERAGE_MIN" 'BEGIN {
             if (t + 0 < m + 0) {

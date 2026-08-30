@@ -2,3 +2,4 @@
 /coverage.out
 /tmp/
 .DS_Store
+/coverage.shipped.out

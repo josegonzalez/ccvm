@@ -18,9 +18,12 @@ lint:
 test:
 	$(GO) test -race -coverprofile=coverage.out -covermode=atomic $(PKG)
 
+# Test scaffolding is excluded: backendtest exists to be imported by other
+# packages' tests, so counting its statements measures nothing.
 .PHONY: cover
 cover: test
-	$(GO) tool cover -func=coverage.out | tail -1
+	@grep -v "internal/backendtest" coverage.out > coverage.shipped.out
+	@$(GO) tool cover -func=coverage.shipped.out | tail -1
 
 # Integration tests are opt-in and fail — rather than skip — when a backend
 # named in CCVM_ITEST_BACKENDS is unavailable. A suite that silently skips
@@ -54,4 +57,4 @@ image: build
 
 .PHONY: clean
 clean:
-	rm -rf $(DIST) coverage.out
+	rm -rf $(DIST) coverage.out coverage.shipped.out
