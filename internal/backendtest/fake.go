@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/josegonzalez/ccvm/internal/backend"
 )
@@ -37,7 +38,9 @@ type Fake struct {
 	PushErr    error
 	// ExecErrOn makes any Exec whose argv contains this string fail, for
 	// testing what happens partway through a sequence.
-	ExecErrOn   string
+	ExecErrOn string
+	// ListDelay makes List slow, for testing that callers bound it.
+	ListDelay   time.Duration
 	AutoRemove  bool
 	Destroyed   []string
 	CreateCalls int
@@ -167,6 +170,13 @@ func (f *Fake) Pull(ctx context.Context, h backend.Handle, src, dst string) erro
 }
 
 func (f *Fake) List(ctx context.Context) ([]backend.Machine, error) {
+	if f.ListDelay > 0 {
+		select {
+		case <-time.After(f.ListDelay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.ListErr != nil {

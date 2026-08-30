@@ -1,0 +1,15 @@
+# The Proxmox reaper.
+#
+# Install on a cluster node, not the Mac. Two reasons: it keeps running while
+# the Mac is asleep, and it needs `pct` to check a guest for the done sentinel,
+# which cannot be done over the API.
+#
+#   scp k8s/proxmox-reaper.cron root@pve1:/etc/cron.d/ccvm-reaper
+#   scp dist/ccvm-linux-amd64 root@pve1:/usr/local/bin/ccvm
+#
+# The node needs the same CCVM_PROXMOX_* settings a workstation uses; put them
+# in /etc/ccvm/environment, which this reads.
+#
+# Every two minutes: on proxmox the reaper is what acts on ccvm-done, so an
+# hourly schedule would make ending a session from inside appear broken.
+*/2 * * * * root [ -f /etc/ccvm/environment ] && . /etc/ccvm/environment; /usr/local/bin/ccvm gc >> /var/log/ccvm-gc.log 2>&1

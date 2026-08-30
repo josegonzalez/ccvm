@@ -536,3 +536,136 @@ func TestCredsRenewUnknownBackend(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 }
+
+func TestGCUnknownSubcommand(t *testing.T) {
+	a, _, _ := newTestApp(t, backendtest.NewFake("docker"))
+	err := cmdGC(a, []string{"frobnicate"})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "install") {
+		t.Errorf("err = %v, want it to list the subcommands", err)
+	}
+}
+
+// A bare `ccvm gc` must still reap, rather than being shadowed by the
+// scheduling subcommands.
+func TestGCBareStillReaps(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, out, _ := newTestApp(t, f)
+	seedMachine(t, f, "cc-old", session.Session{
+		Name: "cc-old", Created: time.Now().Add(-24 * time.Hour), TTL: "1h",
+	})
+
+	if err := cmdGC(a, nil); err != nil {
+		t.Fatalf("cmdGC: %v", err)
+	}
+	if len(f.Destroyed) != 1 {
+		t.Errorf("Destroyed = %v, want the expired machine reaped", f.Destroyed)
+	}
+	if !strings.Contains(out.String(), "destroyed") {
+		t.Errorf("out = %q", out.String())
+	}
+}
+
+func TestGCStatusWhenNotScheduled(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, out, _ := newTestApp(t, f)
+	runner := run.NewFake()
+	runner.On("launchctl", "list").Stdout("-\t0\tcom.apple.other\n")
+	a.runner = runner
+
+	if err := a.gcStatus(); err != nil {
+		t.Fatalf("gcStatus: %v", err)
+	}
+	if !strings.Contains(out.String(), "gc install") {
+		t.Errorf("out = %q, want it to say how to schedule", out.String())
+	}
+}
+
+// A reaper that silently stopped looks identical to one with nothing to do, so
+// status points at the log rather than asserting health.
+func TestGCStatusPointsAtTheLog(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, out, _ := newTestApp(t, f)
+	runner := run.NewFake()
+	runner.On("launchctl", "list").Stdout("-\t0\tsh.ccvm.gc\n")
+	a.runner = runner
+
+	if err := a.gcStatus(); err != nil {
+		t.Fatalf("gcStatus: %v", err)
+	}
+	body := out.String()
+	if !strings.Contains(body, "scheduled every") {
+		t.Errorf("out = %q", body)
+	}
+	if !strings.Contains(body, "ccvm-gc.log") {
+		t.Errorf("out = %q, want the log named so a stopped reaper is findable", body)
+	}
+}
+
+// Turning the reaper off has a consequence worth stating, since nothing else
+// collects kept machines or orphans.
+func TestGCUninstallSaysWhatStopsHappening(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, out, _ := newTestApp(t, f)
+	runner := run.NewFake()
+	runner.On("launchctl").Stdout("")
+	a.runner = runner
+
+	if err := a.gcUninstall(); err != nil {
+		t.Fatalf("gcUninstall: %v", err)
+	}
+	if !strings.Contains(out.String(), "accumulate") {
+		t.Errorf("out = %q, want the consequence stated", out.String())
+	}
+}
+
+// A configured-but-unreachable backend must not block the listing. For the
+// reaper a hang means nothing is collected at all, and launchd will not start
+// a second instance.
+func TestListAllBoundsASlowBackend(t *testing.T) {
+	slow := backendtest.NewFake("docker")
+	slow.ListDelay = 3 * time.Second
+	a, _, _ := newTestApp(t, slow)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	a.ctx = ctx
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = a.listAll(true)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("listAll did not give up on a slow backend")
+	}
+}
+
+// gc must give up well short of its schedule interval, or a run that overruns
+// makes launchd skip the next one and reaping quietly stops.
+func TestGCHasADeadline(t *testing.T) {
+	slow := backendtest.NewFake("docker")
+	slow.ListDelay = 5 * time.Second
+	a, _, _ := newTestApp(t, slow)
+
+	start := time.Now()
+	done := make(chan struct{})
+	go func() {
+		_ = cmdGC(a, []string{"-deadline", "300ms"})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		if elapsed := time.Since(start); elapsed > 3*time.Second {
+			t.Errorf("gc took %s despite its deadline", elapsed)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("gc ignored its deadline")
+	}
+}

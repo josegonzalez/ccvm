@@ -1,6 +1,9 @@
 package attach_test
 
 import (
+	"errors"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -132,5 +135,92 @@ func TestSSHArgsCarriesExtraArgs(t *testing.T) {
 func TestRunRequiresATarget(t *testing.T) {
 	if err := attach.Run(attach.Options{}); err == nil {
 		t.Fatal("expected an error with no target")
+	}
+}
+
+// Claude is a full-screen program, so these paths cannot be exercised through a
+// real ssh; they are also where --yolo and Remote Control take effect.
+func TestRunIssuesTheSessionCommand(t *testing.T) {
+	var got []string
+	restore := attach.SetRunnerForTest(func(argv []string) error {
+		got = argv
+		return nil
+	})
+	defer restore()
+
+	err := attach.Run(attach.Options{
+		Target: "cc-foo", WorkDir: "/work", SessionName: "cc-foo",
+		RemoteControl: true, Yolo: true, IdentityFile: "/k",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	joined := strings.Join(got, " ")
+	for _, want := range []string{"ssh -t", "-i /k", "cc-foo", "tmux new -A -s cc",
+		"--remote-control cc-foo", "--dangerously-skip-permissions"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("command missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+// Quitting Claude with a non-zero status is a normal way to end a session.
+func TestRunTreatsANonZeroExitAsANormalEnd(t *testing.T) {
+	restore := attach.SetRunnerForTest(func([]string) error {
+		return &exec.ExitError{ProcessState: &os.ProcessState{}}
+	})
+	defer restore()
+
+	if err := attach.Run(attach.Options{Target: "cc-foo"}); err != nil {
+		t.Errorf("Run = %v, want a clean exit when the session ends non-zero", err)
+	}
+}
+
+// ssh failing to start at all is a real error, not a session ending.
+func TestRunReportsAFailureToStart(t *testing.T) {
+	restore := attach.SetRunnerForTest(func([]string) error {
+		return errors.New("ssh: executable file not found")
+	})
+	defer restore()
+
+	err := attach.Run(attach.Options{Target: "cc-foo"})
+	if err == nil {
+		t.Fatal("expected an error when ssh cannot start")
+	}
+	if !strings.Contains(err.Error(), "open the session") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestShellPassesTheCommandThrough(t *testing.T) {
+	var got []string
+	restore := attach.SetRunnerForTest(func(argv []string) error {
+		got = argv
+		return nil
+	})
+	defer restore()
+
+	if err := attach.Shell(attach.Options{Target: "cc-foo", IdentityFile: "/k"}, "ls", "/work"); err != nil {
+		t.Fatalf("Shell: %v", err)
+	}
+	joined := strings.Join(got, " ")
+	if !strings.HasSuffix(joined, "cc-foo ls /work") {
+		t.Errorf("command = %q, want the target then the command", joined)
+	}
+	// A plain shell must not start tmux or claude.
+	if strings.Contains(joined, "tmux") || strings.Contains(joined, "claude") {
+		t.Errorf("Shell started a session: %q", joined)
+	}
+}
+
+// A command that exits non-zero inside the machine is the user's result.
+func TestShellTreatsANonZeroExitAsTheResult(t *testing.T) {
+	restore := attach.SetRunnerForTest(func([]string) error {
+		return &exec.ExitError{ProcessState: &os.ProcessState{}}
+	})
+	defer restore()
+
+	if err := attach.Shell(attach.Options{Target: "cc-foo"}, "false"); err != nil {
+		t.Errorf("Shell = %v, want the exit status not treated as a ccvm error", err)
 	}
 }

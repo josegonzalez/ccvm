@@ -156,6 +156,33 @@ fixes auto-remove when a container is created, so a machine started without
 `--keep` will still be deleted if it stops. `ccvm keep` says so rather than
 implying a durability it cannot deliver.
 
+## The reaper
+
+`ccvm gc` collects machines past their TTL and machines whose session ended, but
+it only helps if something runs it. `ccvm gc install` schedules it every two
+minutes via launchd, covering docker and orbstack.
+
+Two minutes rather than hourly because the reaper is not only cleanup: on
+backends without a sentinel-aware PID 1 it is what acts on `ccvm-done`, so a
+slow schedule makes ending a session from inside look broken.
+
+The cluster backends need their own schedules, since a sleeping Mac reaps
+nothing and cannot reach a guest to check it:
+
+```
+kubectl apply -f k8s/reaper.yaml
+scp k8s/proxmox-reaper.cron root@<node>:/etc/cron.d/ccvm-reaper
+```
+
+The kubernetes manifest is verified: applied to a real cluster, with RBAC that
+grants deleting jobs and exec and nothing else — not deleting pods, creating
+jobs, or reading secrets. The proxmox cron file is written but untested, since
+that needs a node.
+
+`ccvm gc status` reports whether the agent is loaded and when its log was last
+written. A reaper that has silently stopped looks exactly like one with nothing
+to do, so the log is the evidence.
+
 ## Testing
 
 ```

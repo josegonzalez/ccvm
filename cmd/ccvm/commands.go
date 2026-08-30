@@ -18,6 +18,7 @@ import (
 	"github.com/josegonzalez/ccvm/internal/code"
 	"github.com/josegonzalez/ccvm/internal/creds"
 	"github.com/josegonzalez/ccvm/internal/profile"
+	"github.com/josegonzalez/ccvm/internal/schedule"
 	"github.com/josegonzalez/ccvm/internal/session"
 	"golang.org/x/sync/errgroup"
 )
@@ -69,6 +70,14 @@ func cmdLs(a *app, args []string) error {
 	return tw.Flush()
 }
 
+// backendTimeout bounds a single backend's listing.
+//
+// A configured-but-unreachable backend otherwise blocks indefinitely: kubectl
+// pointed at a cluster that no longer exists waits far past any useful limit.
+// That matters most for the reaper, where a hang means nothing is collected at
+// all and launchd will not start a second instance.
+const backendTimeout = 20 * time.Second
+
 // listAll fans out across backends concurrently. A backend that is simply not
 // running must not fail the whole listing: `ccvm ls` is the command you reach
 // for when something is wrong.
@@ -82,7 +91,10 @@ func (a *app) listAll(includeUnowned bool) ([]backend.Machine, error) {
 		i, name := i, name
 		g.Go(func() error {
 			b := a.backends[name]
-			ms, err := b.List(a.ctx)
+			ctx, cancel := context.WithTimeout(a.ctx, backendTimeout)
+			defer cancel()
+
+			ms, err := b.List(ctx)
 			if err != nil {
 				// Say nothing about a backend the user never configured;
 				// complain about one they did.
@@ -334,12 +346,37 @@ func (a *app) writeSession(m backend.Machine, s session.Session) error {
 // ---------------------------------------------------------------- gc
 
 func cmdGC(a *app, args []string) error {
+	// Subcommands manage the schedule; a bare `ccvm gc` still reaps now.
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		sub, rest := args[0], args[1:]
+		switch sub {
+		case "install":
+			return a.gcInstall(rest)
+		case "uninstall":
+			return a.gcUninstall()
+		case "status":
+			return a.gcStatus()
+		default:
+			return fmt.Errorf("unknown subcommand %q; try install, uninstall, or status", sub)
+		}
+	}
+
 	fs := newFlags("gc", a)
 	ttl := fs.Duration("ttl", 12*time.Hour, "fallback lifetime for machines with no recorded TTL")
 	dryRun := fs.Bool("dry-run", false, "report what would be destroyed without destroying it")
+	deadline := fs.Duration("deadline", 90*time.Second, "give up after this long")
 	if err := fs.Parse(args); err != nil {
 		return errUsage
 	}
+
+	// Bounded well short of the schedule interval. A run that overruns its
+	// interval means launchd skips the next one, so a single slow backend
+	// would quietly stop all reaping.
+	ctx, cancel := context.WithTimeout(a.ctx, *deadline)
+	defer cancel()
+	restore := a.ctx
+	a.ctx = ctx
+	defer func() { a.ctx = restore }()
 
 	machines, err := a.listAll(false)
 	if err != nil {
@@ -373,6 +410,78 @@ func cmdGC(a *app, args []string) error {
 	}
 	if reaped == 0 {
 		fmt.Fprintln(a.out, "nothing to reap")
+	}
+	return nil
+}
+
+// gcInstall schedules the reaper.
+//
+// `ccvm gc` is only useful if something runs it, and until now nothing did:
+// machines started with --keep, and orphans left by a killed wrapper, simply
+// accumulated.
+func (a *app) gcInstall(args []string) error {
+	fs := newFlags("gc install", a)
+	interval := fs.Duration("interval", schedule.DefaultInterval, "how often to reap")
+	if err := fs.Parse(args); err != nil {
+		return errUsage
+	}
+
+	binary, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate the ccvm binary: %w", err)
+	}
+	binary, err = filepath.EvalSymlinks(binary)
+	if err != nil {
+		return fmt.Errorf("resolve %s: %w", binary, err)
+	}
+
+	agent := schedule.DefaultAgent(binary, a.home)
+	agent.Interval = *interval
+	if err := schedule.Install(a.ctx, a.runner, agent, a.home); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(a.out, "reaping every %s via %s\n", *interval, agent.PlistPath(a.home))
+	fmt.Fprintf(a.out, "  log: %s\n", agent.LogPath)
+	fmt.Fprintln(a.out, "")
+	fmt.Fprintln(a.out, "This covers docker and orbstack, which run on this Mac.")
+	fmt.Fprintln(a.out, "proxmox and kubernetes need their own schedules, since a Mac that is")
+	fmt.Fprintln(a.out, "asleep reaps nothing and cannot reach a guest to check it:")
+	fmt.Fprintln(a.out, "  kubectl apply -f k8s/reaper.yaml")
+	fmt.Fprintln(a.out, "  scp k8s/proxmox-reaper.cron root@<node>:/etc/cron.d/ccvm-reaper")
+	return nil
+}
+
+func (a *app) gcUninstall() error {
+	if err := schedule.Uninstall(a.ctx, a.runner, schedule.Label, a.home); err != nil {
+		return err
+	}
+	fmt.Fprintln(a.out, "reaping is no longer scheduled on this Mac")
+	fmt.Fprintln(a.out, "Machines started with --keep, and orphans from an interrupted session,")
+	fmt.Fprintln(a.out, "will now accumulate until you run `ccvm gc` yourself.")
+	return nil
+}
+
+func (a *app) gcStatus() error {
+	installed, err := schedule.Installed(a.ctx, a.runner, schedule.Label)
+	if err != nil {
+		return fmt.Errorf("ask launchd what is loaded: %w", err)
+	}
+	agent := schedule.DefaultAgent("", a.home)
+	if !installed {
+		fmt.Fprintln(a.out, "not scheduled; run `ccvm gc install`")
+		return nil
+	}
+	fmt.Fprintf(a.out, "scheduled every %s\n", schedule.DefaultInterval)
+	fmt.Fprintf(a.out, "  plist: %s\n", agent.PlistPath(a.home))
+
+	// A reaper that silently stopped looks identical to one with nothing to do,
+	// so point at the evidence rather than asserting it is healthy.
+	if st, err := os.Stat(agent.LogPath); err == nil {
+		fmt.Fprintf(a.out, "  log:   %s (last written %s ago)\n",
+			agent.LogPath, session.HumanAge(time.Since(st.ModTime())))
+	} else {
+		fmt.Fprintf(a.out, "  log:   %s (nothing written yet)\n", agent.LogPath)
 	}
 	return nil
 }

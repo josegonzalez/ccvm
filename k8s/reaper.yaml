@@ -1,0 +1,77 @@
+# The in-cluster reaper.
+#
+# Mostly a backstop: a Job's activeDeadlineSeconds and ttlSecondsAfterFinished
+# already express a session's lifetime, so an ordinary session cleans itself up.
+# What this collects is what those cannot: sessions started with --keep, and
+# Jobs whose pod died in a way that left the Job behind.
+#
+#   kubectl apply -f k8s/reaper.yaml
+#
+# Set CCVM_KUBE_NAMESPACE to match if you do not use `default`.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ccvm-reaper
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ccvm-reaper
+  namespace: default
+rules:
+  # Deleting Jobs is the whole job. Pods and exec are needed to read a
+  # machine's session record and check for the done sentinel.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ccvm-reaper
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: ccvm-reaper
+    namespace: default
+roleRef:
+  kind: Role
+  name: ccvm-reaper
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ccvm-reaper
+  namespace: default
+spec:
+  # Every two minutes, matching the local reaper: on backends without a
+  # sentinel-aware PID 1 the reaper is what acts on ccvm-done, and an hourly
+  # schedule would make ending a session from inside appear broken.
+  schedule: "*/2 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          serviceAccountName: ccvm-reaper
+          restartPolicy: Never
+          containers:
+            - name: reaper
+              # The same image sessions run, so ccvm and kubectl are present.
+              image: ccvm/base:latest
+              imagePullPolicy: IfNotPresent
+              command: ["/usr/local/bin/ccvm", "gc"]
+              env:
+                - name: CCVM_KUBE_NAMESPACE
+                  value: default

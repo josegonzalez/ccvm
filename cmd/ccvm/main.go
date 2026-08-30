@@ -36,7 +36,7 @@ var commands = []command{
 	{"attach", "reattach to a machine's Claude session", cmdAttach},
 	{"keep", "exempt a machine from reaping", cmdKeep},
 	{"rm", "destroy machines", cmdRm},
-	{"gc", "reap expired and finished machines", cmdGC},
+	{"gc", "reap finished machines, or schedule the reaper", cmdGC},
 	{"profiles", "list, check, or build profiles", cmdProfiles},
 	{"creds", "check or import the Claude credential sessions use", cmdCreds},
 	{"doctor", "check whether a machine could be created", cmdDoctor},

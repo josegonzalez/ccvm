@@ -92,6 +92,17 @@ func SSHArgs(o Options) []string {
 	return append(argv, o.Target, RemoteScript(o))
 }
 
+// runInteractive runs a command with this process's terminal attached.
+//
+// A variable rather than a direct call so tests can observe what would be run:
+// Claude is a full-screen program, so these paths cannot be exercised any other
+// way, and they are where --yolo and Remote Control actually take effect.
+var runInteractive = func(argv []string) error {
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return cmd.Run()
+}
+
 // Run enters the session with the terminal attached.
 //
 // Exiting the session is a normal outcome, not a failure: ssh reports the
@@ -101,13 +112,11 @@ func Run(o Options) error {
 	if o.Target == "" {
 		return fmt.Errorf("no ssh target for the session")
 	}
-	argv := SSHArgs(o)
-	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-
-	if err := cmd.Run(); err != nil {
+	if err := runInteractive(SSHArgs(o)); err != nil {
 		var ee *exec.ExitError
 		if ok := asExitError(err, &ee); ok {
+			// Quitting Claude with a non-zero status is a normal way to end a
+			// session, not a ccvm failure.
 			return nil
 		}
 		return fmt.Errorf("open the session: %w", err)
@@ -129,16 +138,23 @@ func Shell(o Options, command ...string) error {
 	argv = append(argv, o.Target)
 	argv = append(argv, command...)
 
-	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
+	if err := runInteractive(argv); err != nil {
 		var ee *exec.ExitError
 		if ok := asExitError(err, &ee); ok {
+			// A command that exits non-zero inside the machine is the user's
+			// result, not a ccvm error.
 			return nil
 		}
 		return err
 	}
 	return nil
+}
+
+// SetRunnerForTest swaps the interactive runner and returns a restore func.
+func SetRunnerForTest(f func(argv []string) error) func() {
+	prev := runInteractive
+	runInteractive = f
+	return func() { runInteractive = prev }
 }
 
 func asExitError(err error, target **exec.ExitError) bool {
