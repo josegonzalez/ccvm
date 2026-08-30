@@ -149,6 +149,15 @@ func cmdUp(a *app, args []string) error {
 		}
 	}
 
+	if err := a.installSSHKey(b, handle); err != nil {
+		unwind()
+		return &Fault{
+			Backend: chosen, Step: "install the ssh key", Cause: err,
+			Fix:     "check that the guest image runs sshd and allows root login by key",
+			Cleanup: "machine destroyed; nothing left running.",
+		}
+	}
+
 	// Only backends reached over a forwarded loopback port need an entry.
 	// OrbStack answers to <name>@orb through its own multiplexing ssh server,
 	// and proxmox guests have real addresses, so writing one would shadow the
@@ -157,7 +166,13 @@ func cmdUp(a *app, args []string) error {
 		if _, err := a.ssh.EnsureInclude(); err != nil {
 			fmt.Fprintf(a.err, "ccvm: could not update ~/.ssh/config: %v\n", err)
 		}
-		host := sshcfg.Host{Name: spec.Name, HostName: "127.0.0.1", Port: spec.SSHPort, User: "root"}
+		host := sshcfg.Host{
+			Name:         spec.Name,
+			HostName:     "127.0.0.1",
+			Port:         spec.SSHPort,
+			User:         "root",
+			IdentityFile: a.sshKey.Private,
+		}
 		if err := a.ssh.Add(host); err != nil {
 			unwind()
 			return &Fault{
@@ -178,6 +193,53 @@ func cmdUp(a *app, args []string) error {
 
 	fmt.Fprintf(a.out, "%s is up (%s, %s)\n", spec.Name, chosen, mode)
 	fmt.Fprintf(a.out, "  ssh %s\n", b.SSHTarget(handle))
+	return nil
+}
+
+// installSSHKey puts ccvm's public key in the guest's authorized_keys.
+//
+// It goes through Push and Exec rather than being baked into images, so one
+// path serves every backend and rotating the key does not mean rebuilding four
+// image types.
+func (a *app) installSSHKey(b backend.Backend, h backend.Handle) error {
+	line, err := a.sshKey.AuthorizedKey()
+	if err != nil {
+		return err
+	}
+
+	tmp, err := os.CreateTemp("", "ccvm-authorized-keys-*")
+	if err != nil {
+		return err
+	}
+	path := tmp.Name()
+	defer os.Remove(path)
+	if _, err := tmp.WriteString(line); err != nil {
+		tmp.Close()
+		return err
+	}
+	tmp.Close()
+
+	const dir = "/root/.ssh"
+	if _, err := b.Exec(a.ctx, h, "mkdir", "-p", dir); err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+	if err := b.Push(a.ctx, h, path, dir+"/authorized_keys"); err != nil {
+		return fmt.Errorf("write authorized_keys: %w", err)
+	}
+	// Ownership first: file transfer carries the host's uid, so the key lands
+	// owned by whoever ran ccvm rather than by root. sshd refuses an
+	// authorized_keys the account does not own, and reports it only in its own
+	// log — the client just sees "Permission denied (publickey)".
+	if _, err := b.Exec(a.ctx, h, "chown", "-R", "root:root", dir); err != nil {
+		return fmt.Errorf("set ownership on %s: %w", dir, err)
+	}
+	// sshd likewise ignores an authorized_keys that group or others can write.
+	if _, err := b.Exec(a.ctx, h, "chmod", "700", dir); err != nil {
+		return err
+	}
+	if _, err := b.Exec(a.ctx, h, "chmod", "600", dir+"/authorized_keys"); err != nil {
+		return err
+	}
 	return nil
 }
 

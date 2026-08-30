@@ -16,6 +16,7 @@ import (
 	"github.com/josegonzalez/ccvm/internal/profile"
 	"github.com/josegonzalez/ccvm/internal/run"
 	"github.com/josegonzalez/ccvm/internal/sshcfg"
+	"github.com/josegonzalez/ccvm/internal/sshkey"
 	"github.com/josegonzalez/ccvm/profiles"
 )
 
@@ -119,6 +120,7 @@ type app struct {
 	runner   run.Execer
 	profiles profile.Source
 	ssh      sshcfg.File
+	sshKey   sshkey.Pair
 	backends map[string]backend.Backend
 }
 
@@ -140,6 +142,17 @@ func newApp(ctx context.Context, verbose bool, stdout, stderr io.Writer) (*app, 
 	// Every registered backend is built up front so `ccvm ls` and `ccvm doctor`
 	// can span all of them. Construction is cheap and does not contact
 	// anything; reachability is Preflight's job.
+	// ccvm mints its own key rather than reusing one of the developer's:
+	// disposable machines should not share a credential with anything real.
+	key := sshkey.Default(home)
+	created, err := key.Ensure()
+	if err != nil {
+		return nil, err
+	}
+	if created {
+		fmt.Fprintf(stderr, "ccvm: created %s for reaching session machines\n", key.Private)
+	}
+
 	backends := map[string]backend.Backend{}
 	cfg := backendConfig()
 	for _, name := range backend.Names() {
@@ -159,6 +172,7 @@ func newApp(ctx context.Context, verbose bool, stdout, stderr io.Writer) (*app, 
 		runner:   runner,
 		profiles: profile.DefaultSource(home, profiles.FS()),
 		ssh:      sshcfg.Default(home),
+		sshKey:   key,
 		backends: backends,
 	}, nil
 }

@@ -255,3 +255,90 @@ func TestUpEnsuresSSHConfigInclude(t *testing.T) {
 		t.Errorf("ssh config = %q, want the Include line", data)
 	}
 }
+
+// Without this the machine is created and then unreachable, which is the state
+// ccvm shipped in for eight commits.
+func TestUpInstallsSSHKeyIntoTheGuest(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	if err := cmdUp(a, []string{dir}); err != nil {
+		t.Fatalf("cmdUp: %v", err)
+	}
+
+	got, ok := f.FileIn("cc-demo", "/root/.ssh/authorized_keys")
+	if !ok {
+		t.Fatal("no authorized_keys in the guest; ssh would be refused")
+	}
+	if !strings.HasPrefix(string(got), "ssh-ed25519 ") {
+		t.Errorf("authorized_keys = %q, want a public key", got)
+	}
+	// A missing trailing newline joins this entry to the next one written.
+	if !strings.HasSuffix(string(got), "\n") {
+		t.Error("authorized_keys does not end in a newline")
+	}
+}
+
+// sshd silently ignores an authorized_keys that group or others can write, and
+// says so only in a log nobody reads at that moment.
+func TestUpTightensAuthorizedKeysPermissions(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	if err := cmdUp(a, []string{dir}); err != nil {
+		t.Fatalf("cmdUp: %v", err)
+	}
+	// File transfer carries the host's uid, so the key lands owned by whoever
+	// ran ccvm. sshd refuses a key the account does not own and says so only in
+	// its own log; the client just sees "Permission denied (publickey)".
+	if !f.Ran("chown", "-R", "root:root", "/root/.ssh") {
+		t.Errorf("did not take ownership of /root/.ssh; sshd would refuse the key\ncalls: %v", f.ExecCalls())
+	}
+	if !f.Ran("chmod", "700", "/root/.ssh") {
+		t.Errorf("did not tighten /root/.ssh; sshd would ignore the key\ncalls: %v", f.ExecCalls())
+	}
+	if !f.Ran("chmod", "600", "/root/.ssh/authorized_keys") {
+		t.Errorf("did not tighten authorized_keys\ncalls: %v", f.ExecCalls())
+	}
+}
+
+// The ssh config must point at ccvm's own key, or ssh offers the user's keys
+// instead and the guest rejects every one.
+func TestUpSSHConfigNamesTheCCVMKey(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	if err := cmdUp(a, []string{dir}); err != nil {
+		t.Fatalf("cmdUp: %v", err)
+	}
+	hosts, err := a.ssh.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hosts) != 1 {
+		t.Fatalf("got %d hosts", len(hosts))
+	}
+	if !strings.HasSuffix(hosts[0].IdentityFile, "ccvm_ed25519") {
+		t.Errorf("IdentityFile = %q, want ccvm's own key", hosts[0].IdentityFile)
+	}
+}
+
+// A guest that cannot take the key is unusable, so it must be torn down rather
+// than left running and unreachable.
+func TestUpRollsBackWhenKeyInstallFails(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	f.PushErr = errBoom{}
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	err := cmdUp(a, []string{dir})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if len(f.Destroyed) != 1 {
+		t.Errorf("Destroyed = %v, want the unreachable machine cleaned up", f.Destroyed)
+	}
+}

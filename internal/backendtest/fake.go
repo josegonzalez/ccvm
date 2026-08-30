@@ -22,9 +22,10 @@ import (
 type Fake struct {
 	BackendName string
 
-	mu       sync.Mutex
-	machines map[string]*backend.Machine
-	files    map[string]map[string][]byte // machine -> path -> contents
+	mu        sync.Mutex
+	machines  map[string]*backend.Machine
+	files     map[string]map[string][]byte // machine -> path -> contents
+	execCalls [][]string
 
 	// Failures let a test script a specific operation failing.
 	CreateErr   error
@@ -32,6 +33,7 @@ type Fake struct {
 	WaitErr     error
 	ListErr     error
 	DestroyErr  error
+	PushErr     error
 	AutoRemove  bool
 	Destroyed   []string
 	CreateCalls int
@@ -80,17 +82,47 @@ func (f *Fake) Wait(ctx context.Context, h backend.Handle) error  { return f.Wai
 
 func (f *Fake) SSHTarget(h backend.Handle) string { return h.Name }
 
+// ExecCalls returns every command run inside a machine, for assertions.
+func (f *Fake) ExecCalls() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([][]string, len(f.execCalls))
+	copy(out, f.execCalls)
+	return out
+}
+
+// Ran reports whether argv was run inside a machine.
+func (f *Fake) Ran(argv ...string) bool {
+	for _, c := range f.ExecCalls() {
+		if len(c) != len(argv) {
+			continue
+		}
+		same := true
+		for i := range c {
+			if c[i] != argv[i] {
+				same = false
+				break
+			}
+		}
+		if same {
+			return true
+		}
+	}
+	return false
+}
+
 // Exec supports only what the layers above actually run: the sentinel check.
 func (f *Fake) Exec(ctx context.Context, h backend.Handle, argv ...string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.execCalls = append(f.execCalls, append([]string(nil), argv...))
 	if len(argv) == 3 && argv[0] == "test" && argv[1] == "-f" {
 		if _, ok := f.files[h.Name][argv[2]]; ok {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("test -f %s: no such file", argv[2])
 	}
-	if len(argv) > 0 && argv[0] == "mkdir" {
+	if len(argv) > 0 && (argv[0] == "mkdir" || argv[0] == "chmod" || argv[0] == "chown") {
 		return nil, nil
 	}
 	return nil, nil
@@ -99,6 +131,9 @@ func (f *Fake) Exec(ctx context.Context, h backend.Handle, argv ...string) ([]by
 func (f *Fake) Push(ctx context.Context, h backend.Handle, src, dst string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.PushErr != nil {
+		return f.PushErr
+	}
 	data, err := readFile(src)
 	if err != nil {
 		return err

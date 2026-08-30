@@ -12,12 +12,17 @@ import (
 	"github.com/josegonzalez/ccvm/internal/profile"
 	"github.com/josegonzalez/ccvm/internal/session"
 	"github.com/josegonzalez/ccvm/internal/sshcfg"
+	"github.com/josegonzalez/ccvm/internal/sshkey"
 	"github.com/josegonzalez/ccvm/profiles"
 )
 
 func newTestApp(t *testing.T, fake *backendtest.Fake) (*app, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 	home := t.TempDir()
+	key := sshkey.Default(home)
+	if _, err := key.Ensure(); err != nil {
+		t.Fatalf("generate ssh key: %v", err)
+	}
 	var out, errOut bytes.Buffer
 	return &app{
 		ctx:      context.Background(),
@@ -26,6 +31,7 @@ func newTestApp(t *testing.T, fake *backendtest.Fake) (*app, *bytes.Buffer, *byt
 		err:      &errOut,
 		profiles: profile.DefaultSource(home, profiles.FS()),
 		ssh:      sshcfg.Default(home),
+		sshKey:   key,
 		backends: map[string]backend.Backend{fake.BackendName: fake},
 	}, &out, &errOut
 }

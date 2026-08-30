@@ -21,8 +21,10 @@ RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_VERSION}" \
     && ln -sf /root/.local/bin/claude /usr/local/bin/claude \
     && claude --version
 
-# sshd needs its host keys and a place to put its runtime socket. Password auth
-# stays off: the only way in is the key ccvm installs.
+# sshd needs its host keys and a place to put its runtime socket. No authorized
+# key is baked in: ccvm installs its own into every guest at spawn, through one
+# path that serves all four backends. Password auth stays off, so that key is
+# the only way in.
 RUN ssh-keygen -A \
     && mkdir -p /run/sshd /root/.ssh /etc/ccvm /run/ccvm \
     && chmod 700 /root/.ssh \
