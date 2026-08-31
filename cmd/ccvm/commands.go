@@ -94,6 +94,15 @@ func (a *app) listAll(includeUnowned bool) ([]backend.Machine, error) {
 			defer cancel()
 
 			ms, err := b.List(ctx)
+			if err == nil && includeUnowned {
+				// Best effort: a backend that cannot enumerate these still
+				// returns the ones it owns, which is the common case.
+				if u, ok := b.(backend.UnownedLister); ok {
+					if extra, uerr := u.ListUnowned(ctx); uerr == nil {
+						ms = append(ms, extra...)
+					}
+				}
+			}
 			if err != nil {
 				// Say nothing about a backend the user never configured, or
 				// whose tool is not installed on this machine at all;

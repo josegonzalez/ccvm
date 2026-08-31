@@ -140,6 +140,35 @@ type dockerPS struct {
 	Labels string `json:"Labels"`
 }
 
+// ListUnowned finds containers named like ccvm sessions that have lost the
+// label. Without this they are invisible to every command and never reaped.
+func (d *Docker) ListUnowned(ctx context.Context) ([]Machine, error) {
+	out, err := d.Runner.Run(ctx, d.bin(), "ps", "--all", "--format", "json")
+	if err != nil {
+		return nil, fmt.Errorf("list containers: %w", err)
+	}
+
+	var machines []Machine
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var p dockerPS
+		if err := json.Unmarshal([]byte(line), &p); err != nil {
+			return nil, fmt.Errorf("parse docker ps output: %w", err)
+		}
+		// Only ones the label filter would have missed, and only ones that look
+		// like sessions: everything else on this machine is none of ccvm's
+		// business.
+		if !IsSessionName(p.Names) || strings.Contains(p.Labels, LabelOwner+"=") {
+			continue
+		}
+		machines = append(machines, machineFromPS(p))
+	}
+	return machines, nil
+}
+
 func (d *Docker) List(ctx context.Context) ([]Machine, error) {
 	out, err := d.Runner.Run(ctx, d.bin(), "ps", "--all",
 		"--filter", "label="+LabelOwner, "--format", "json")

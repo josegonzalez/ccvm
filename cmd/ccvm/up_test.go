@@ -87,7 +87,7 @@ func TestFirstNonEmpty(t *testing.T) {
 }
 
 func TestFixForSuggestsAnAction(t *testing.T) {
-	got := fixFor("docker", errDaemon{})
+	got := fixFor("docker", "base", errDaemon{})
 	if !strings.Contains(got, "orbstack") {
 		t.Errorf("fix = %q, want it to offer an alternative backend", got)
 	}

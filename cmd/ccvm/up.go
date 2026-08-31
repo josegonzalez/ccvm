@@ -141,7 +141,7 @@ func cmdUp(a *app, args []string) error {
 			Backend: chosen,
 			Step:    "preflight",
 			Cause:   err,
-			Fix:     fixFor(chosen, err),
+			Fix:     fixFor(chosen, *profileName, err),
 		}
 	}
 
@@ -181,7 +181,7 @@ func cmdUp(a *app, args []string) error {
 			Backend: chosen,
 			Step:    fmt.Sprintf("create machine %s", spec.Name),
 			Cause:   err,
-			Fix:     fixFor(chosen, err),
+			Fix:     fixFor(chosen, *profileName, err),
 		}
 	}
 	rollback = append(rollback, func() { _ = b.Destroy(a.ctx, handle) })
@@ -947,7 +947,7 @@ func firstNonEmpty(vals ...string) string {
 }
 
 // fixFor turns a backend's own failure into a next action.
-func fixFor(backendName string, err error) string {
+func fixFor(backendName, profileName string, err error) string {
 	msg := strings.ToLower(err.Error())
 	switch {
 	// Checked before the generic reachability cases, which would otherwise
@@ -973,7 +973,7 @@ func fixFor(backendName string, err error) string {
 		}
 		return fmt.Sprintf("check that the %s backend is running and reachable", backendName)
 	case strings.Contains(msg, "not present locally"):
-		return "build the profile image with `ccvm profiles build <name>`, or pull it"
+		return fmt.Sprintf("build it with `ccvm profiles build %s --backend %s`, or pull it", profileName, backendName)
 	case strings.Contains(msg, "no [backend."):
 		return "add the table to the profile, or pick another backend"
 	}

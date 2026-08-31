@@ -419,3 +419,27 @@ func TestDockerStopDoesNotRemove(t *testing.T) {
 		t.Error("Stop removed the container; the reaper must be able to read a stopped machine")
 	}
 }
+
+// A container that lost ccvm's label is invisible to every command and will
+// never be reaped. --all is how you find it again, and it must not drag in
+// unrelated containers while doing so.
+func TestDockerListUnownedFindsOnlyLostSessions(t *testing.T) {
+	f := run.NewFake()
+	f.On("docker", "ps").Stdout(strings.Join([]string{
+		`{"ID":"1","Names":"cc-lost","State":"running","Labels":"com.example=1"}`,
+		`{"ID":"2","Names":"cc-owned","State":"running","Labels":"ccvm=1"}`,
+		`{"ID":"3","Names":"postgres","State":"running","Labels":""}`,
+	}, "\n"))
+	d := backend.NewDocker(f)
+
+	got, err := d.ListUnowned(context.Background())
+	if err != nil {
+		t.Fatalf("ListUnowned: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("machines = %+v, want only the unlabelled session", got)
+	}
+	if got[0].Name != "cc-lost" {
+		t.Errorf("Name = %q, want cc-lost", got[0].Name)
+	}
+}

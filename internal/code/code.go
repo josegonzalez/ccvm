@@ -208,7 +208,8 @@ func cloneRepo(ctx context.Context, o Options) error {
 
 	if _, err := o.Backend.Exec(ctx, o.Handle, argv...); err != nil {
 		return fmt.Errorf("clone %s into the machine: %w\n"+
-			"The machine needs credentials for that remote; --forward-ssh-agent covers an ssh remote", origin, err)
+			"The machine needs credentials for that remote. Use --code rsync to copy the tree in "+
+			"instead of cloning it, or make the remote reachable without a credential", origin, err)
 	}
 	return nil
 }

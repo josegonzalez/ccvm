@@ -192,6 +192,19 @@ func IsToolMissing(err error) bool {
 	return strings.Contains(err.Error(), "executable file not found")
 }
 
+// UnownedLister is implemented by backends that can also find machines which
+// look like ccvm sessions but no longer carry its ownership marker.
+//
+// A label or tag can be stripped by hand, by a `docker run` that recreated a
+// container, or by a restore from a backup. Such a machine is invisible to
+// every ccvm command and will never be reaped, so `ccvm ls --all` needs a way
+// to surface it. It deliberately matches on ccvm's name prefix rather than
+// listing everything: the point is to recover a lost session, not to enumerate
+// unrelated containers.
+type UnownedLister interface {
+	ListUnowned(ctx context.Context) ([]Machine, error)
+}
+
 // Stopper is implemented by backends that can halt a machine without destroying
 // it. The reaper needs this to exist for `ccvm keep` to mean anything: a
 // machine that cannot be stopped and resumed is not durable.

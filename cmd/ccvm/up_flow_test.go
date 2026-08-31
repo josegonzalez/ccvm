@@ -1164,7 +1164,7 @@ func TestFixForOffersANextAction(t *testing.T) {
 		{"docker", errBoomMsg("something unforeseen"), ""},
 	}
 	for _, tt := range tests {
-		got := fixFor(tt.backend, tt.err)
+		got := fixFor(tt.backend, "base", tt.err)
 		if tt.want == "" {
 			if got != "" {
 				t.Errorf("%v: fix = %q, want none for an unrecognized failure", tt.err, got)

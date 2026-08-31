@@ -76,7 +76,7 @@ func TestFixForNamesTheActualRemedy(t *testing.T) {
 		{"k8s missing namespace", "k8s", errors.New(`namespace "ccvm" is not reachable`), "create namespace"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := fixFor(tc.backend, tc.err)
+			got := fixFor(tc.backend, "base", tc.err)
 			if got == "" {
 				t.Fatalf("no fix offered for %v", tc.err)
 			}
@@ -114,5 +114,19 @@ func TestSplitVerboseLeavesGuestArgumentsAlone(t *testing.T) {
 				t.Errorf("verbose = %v, want %v", verbose, tc.wantVerbose)
 			}
 		})
+	}
+}
+
+// The fix has to be a command you can actually run. It printed the literal
+// text "<name>", so following it verbatim failed.
+func TestFixForNamesTheProfileToBuild(t *testing.T) {
+	got := fixFor("orbstack", "go", errors.New(`image "ccvm/go:latest" is not present locally`))
+	if strings.Contains(got, "<name>") {
+		t.Errorf("fix = %q, still prints a placeholder", got)
+	}
+	for _, want := range []string{"go", "orbstack"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("fix = %q, want it to name %q", got, want)
+		}
 	}
 }
