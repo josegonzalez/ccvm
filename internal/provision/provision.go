@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/josegonzalez/ccvm/internal/backend"
+	"github.com/josegonzalez/ccvm/internal/creds"
 	"github.com/josegonzalez/ccvm/internal/profile"
 )
 
@@ -257,7 +258,11 @@ func RunFrom(ctx context.Context, r Runner, h backend.Handle, layers []Layer, fi
 		if err := push(ctx, r, h, l.Script, dst); err != nil {
 			return fmt.Errorf("stage %s: %w", l.Name, err)
 		}
-		if _, err := r.Exec(ctx, h, "sh", "-e", dst); err != nil {
+		// Sourced first: a profile's [env] lives in that file, and a command
+		// like `go mod download` needs GOFLAGS as much as the session does.
+		// Tolerant of it being absent, since a broker has no env file.
+		script := "set -a; . " + creds.GuestEnvFile + " 2>/dev/null || true; set +a; exec sh -e " + dst
+		if _, err := r.Exec(ctx, h, "sh", "-c", script); err != nil {
 			if l.Command != "" {
 				return fmt.Errorf("%s failed: %s: %w", l.Name, l.Command, err)
 			}

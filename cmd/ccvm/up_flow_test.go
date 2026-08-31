@@ -18,6 +18,7 @@ import (
 	"github.com/josegonzalez/ccvm/internal/run"
 	"github.com/josegonzalez/ccvm/internal/session"
 	"github.com/josegonzalez/ccvm/internal/sshcfg"
+	"github.com/josegonzalez/ccvm/profiles"
 )
 
 func newProject(t *testing.T, name string) string {
@@ -1583,5 +1584,37 @@ func TestMergeAuthorizedKeyIsIdempotent(t *testing.T) {
 	}
 	if strings.Count(twice, "AAAAsession") != 1 {
 		t.Errorf("key duplicated: %q", twice)
+	}
+}
+
+// A profile's [env] reached only docker and kubernetes, which can carry
+// variables natively. orbstack and proxmox have nowhere to put them, so the go
+// profile's GOFLAGS was silently dropped on half the backends.
+func TestUpWritesProfileEnvIntoTheGuest(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	// A profile the user wrote, so this does not depend on a shipped one.
+	profDir := filepath.Join(a.home, ".config", "ccvm", "profiles", "envy")
+	if err := os.MkdirAll(profDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	toml := "extends = \"base\"\n\n[env]\nGOFLAGS = \"-mod=mod\"\n"
+	if err := os.WriteFile(filepath.Join(profDir, "profile.toml"), []byte(toml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.profiles = profile.DefaultSource(a.home, profiles.FS())
+
+	if err := cmdUp(a, []string{"-detach", "-profile", "envy", dir}); err != nil {
+		t.Fatalf("cmdUp: %v", err)
+	}
+
+	env, ok := f.FileIn("cc-demo", "/etc/ccvm/env")
+	if !ok {
+		t.Fatal("no env file in the guest")
+	}
+	if !strings.Contains(string(env), "GOFLAGS") {
+		t.Errorf("env file lost the profile's [env]:\n%s", env)
 	}
 }

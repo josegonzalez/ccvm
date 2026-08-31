@@ -644,11 +644,10 @@ func (a *app) installCredentials(b backend.Backend, h backend.Handle, spec backe
 	if _, err := b.Exec(a.ctx, h, "mkdir", "-p", filepath.Dir(creds.GuestEnvFile)); err != nil {
 		return err
 	}
-	// A broker gets no env file at all. Writing an empty one would shadow the
-	// login the user is about to mint inside it, since an environment token
-	// outranks a /login credential.
-	if c.Mode != creds.None {
-		if err := a.pushString(b, h, c.EnvFile(), creds.GuestEnvFile, "600"); err != nil {
+	// A broker gets no credential in the file, but a profile's [env] still
+	// belongs there: the machine is otherwise a normal session.
+	if c.Mode != creds.None || len(spec.Env) > 0 {
+		if err := a.pushString(b, h, c.EnvFileWith(spec.Env), creds.GuestEnvFile, "600"); err != nil {
 			return fmt.Errorf("write %s: %w", creds.GuestEnvFile, err)
 		}
 	}

@@ -182,6 +182,10 @@ post     = ["git config --global init.defaultBranch main"]
 setup    = ["go mod download"]
 ```
 
+`[env]` reaches the guest through the session's env file, so it applies on every
+backend rather than only the two that can carry variables natively, and is
+visible to provisioning commands as well as to Claude.
+
 Configuration is layered, later winning: built-in defaults, the `extends` chain,
 the profile, `~/.config/ccvm/profile.toml`, the project's `.ccvm/profile.toml`,
 then flags. Scalars override, `[env]` and `[backend.*]` merge per key, and

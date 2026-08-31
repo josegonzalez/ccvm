@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -167,15 +168,38 @@ func ExpiresAt(path string) (time.Time, error) {
 //
 // Only the token path puts a secret here; the login path writes a file instead,
 // so its env only records which mode is in use.
-func (s Source) EnvFile() string {
+func (s Source) EnvFile() string { return s.EnvFileWith(nil) }
+
+// EnvFileWith renders the guest env including a profile's [env].
+//
+// The profile's variables live here rather than being passed to the backend
+// because only docker and kubernetes can carry them natively; orbstack and
+// proxmox have nowhere to put them, so a profile's [env] was silently dropped
+// on half the backends. One file every backend can write makes it uniform.
+func (s Source) EnvFileWith(extra map[string]string) string {
 	var b strings.Builder
 	b.WriteString("# Written by ccvm. Sourced by the session before Claude starts.\n")
 	fmt.Fprintf(&b, "CCVM_AUTH_MODE=%s\n", s.Mode)
 	if s.Mode == Token {
 		// Quoted: the token is opaque and must survive shell sourcing intact.
-		fmt.Fprintf(&b, "CLAUDE_CODE_OAUTH_TOKEN='%s'\n", strings.ReplaceAll(s.Token, "'", `'\''`))
+		fmt.Fprintf(&b, "CLAUDE_CODE_OAUTH_TOKEN='%s'\n", shellQuote(s.Token))
+	}
+	// Sorted, so the file does not churn between spawns of the same profile.
+	keys := make([]string, 0, len(extra))
+	for k := range extra {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Fprintf(&b, "%s='%s'\n", k, shellQuote(extra[k]))
 	}
 	return b.String()
+}
+
+// shellQuote makes a value safe inside single quotes, so a password or a flag
+// containing a quote cannot end the string and change what gets sourced.
+func shellQuote(v string) string {
+	return strings.ReplaceAll(v, "'", `'\''`)
 }
 
 // SupportsRemoteControl reports whether a session on this credential can be
