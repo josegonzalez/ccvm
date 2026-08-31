@@ -343,15 +343,31 @@ func TestReadSessionRecordFromStoppedMachine(t *testing.T) {
 		}
 
 		// The machine must still be listed, as stopped rather than absent.
-		machines, err := b.List(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		//
+		// Polled rather than read once. `docker stop` returns when the
+		// container's process exits, but `docker ps` can still report it
+		// running for a moment afterwards. That window is far shorter than the
+		// gap between two ccvm invocations, so it is an artifact of asserting
+		// in-process rather than anything a user can observe. An absent machine
+		// never reaches the wanted state, so the case this assertion exists for
+		// still fails.
 		var state string
-		for _, m := range machines {
-			if m.Name == spec.Name {
-				state = m.State
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			machines, err := b.List(ctx)
+			if err != nil {
+				t.Fatal(err)
 			}
+			state = ""
+			for _, m := range machines {
+				if m.Name == spec.Name {
+					state = m.State
+				}
+			}
+			if state == backend.StateStopped {
+				break
+			}
+			time.Sleep(time.Second)
 		}
 		if state != backend.StateStopped {
 			t.Errorf("stopped machine listed as %q, want %q", state, backend.StateStopped)
