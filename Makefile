@@ -14,11 +14,15 @@ all: lint test
 fmt:
 	gofmt -w .
 
+# The go fix check mirrors CI, which fails on modernizations it would have
+# applied. It runs with -diff rather than rewriting in place: a lint target that
+# edits your working tree is a surprise, and the fix is one command away.
 .PHONY: lint
 lint:
 	@test -z "$$(gofmt -l . | tee /dev/stderr)" || (echo "gofmt: files need formatting" && false)
 	$(GO) vet $(PKG)
 	$(GO) vet -tags=integration $(PKG)
+	@test -z "$$($(GO) fix -diff $(PKG) | tee /dev/stderr)" || (echo "go fix: run '$(GO) fix ./...' and commit the result" && false)
 	@$(MAKE) --no-print-directory golangci
 
 # golangci-lint refuses to load a config whose target Go version is newer than
