@@ -55,12 +55,18 @@ func (a *app) buildDockerImage(name, backendName string, cfg *profile.Config) er
 		return fmt.Errorf("profile %q has no Dockerfile", name)
 	}
 
-	// The build context is the working directory because the Dockerfile copies
-	// the guest binaries out of dist/. That ties this command to the repo, so
-	// say it plainly rather than letting docker fail on a missing COPY source.
-	if _, err := os.Stat("dist"); err != nil {
-		return fmt.Errorf("no dist/ in the working directory: run `make build` from the ccvm repo first, "+
-			"since the image copies the guest binaries from there (%w)", err)
+	// Only the profiles whose Dockerfile copies out of dist/ need it. Demanding
+	// it unconditionally tied every build to a repo checkout, including the
+	// layered profiles that copy nothing and only need their base image.
+	body, err := os.ReadFile(dockerfile)
+	if err != nil {
+		return err
+	}
+	if strings.Contains(string(body), "dist/") {
+		if _, err := os.Stat("dist"); err != nil {
+			return fmt.Errorf("no dist/ in the working directory: run `make build` from the ccvm repo first, "+
+				"since the %s image copies the guest binaries from there (%w)", name, err)
+		}
 	}
 
 	fmt.Fprintf(a.out, "building %s\n", image)

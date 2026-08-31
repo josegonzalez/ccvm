@@ -19,8 +19,10 @@ cpus   = 4
 memory = "8G"
 disk   = "32G"
 
+# delve and golangci-lint are Go tools, not Debian packages: naming them here
+# made every spawn abort on `apt-get install delve`. The image installs them.
 [provision]
-packages = ["delve", "golangci-lint"]
+packages = []
 
 [env]
 GOFLAGS = "-mod=mod"

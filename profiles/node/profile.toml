@@ -17,5 +17,7 @@ vm_template  = 9103
 [resources]
 memory = "8G"
 
+# pnpm comes from corepack in the image, not from apt, which has no such
+# package - naming it here aborted every spawn.
 [provision]
-packages = ["pnpm"]
+packages = []

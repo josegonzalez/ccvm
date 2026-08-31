@@ -120,3 +120,49 @@ func TestShippedProfilesLeaveTheCodeModeToTheBackend(t *testing.T) {
 		}
 	}
 }
+
+// A profile that names an image must ship something that can build it.
+// `go` and `node` declared images and shipped only a profile.toml, so
+// `ccvm up --profile go` failed preflight on a missing image and the fix it
+// suggested could not succeed either.
+func TestShippedProfilesCanBeBuilt(t *testing.T) {
+	for _, name := range []string{"base", "go", "node"} {
+		entries, err := profiles.FS().(interface {
+			ReadDir(string) ([]os.DirEntry, error)
+		}).ReadDir(name)
+		if err != nil {
+			t.Fatalf("ReadDir(%s): %v", name, err)
+		}
+		var hasDockerfile bool
+		for _, e := range entries {
+			if e.Name() == "Dockerfile" {
+				hasDockerfile = true
+			}
+		}
+		if !hasDockerfile {
+			t.Errorf("profile %q declares a docker image but ships no Dockerfile", name)
+		}
+	}
+}
+
+// apt cannot install a Go tool or an npm package. Naming one in
+// [provision].packages aborted every spawn of that profile, because a failing
+// provisioning layer destroys the machine by design.
+func TestShippedProfilesDoNotAskAptForNonPackages(t *testing.T) {
+	notDebian := map[string]bool{
+		"delve": true, "golangci-lint": true, "pnpm": true, "typescript": true,
+	}
+	src := profile.FSSource{FS: profiles.FS()}
+
+	for _, name := range []string{"base", "go", "node"} {
+		c, err := profile.Resolve(name, src)
+		if err != nil {
+			t.Fatalf("Resolve(%s): %v", name, err)
+		}
+		for _, pkg := range c.Provision.Packages {
+			if notDebian[pkg] {
+				t.Errorf("profile %q asks apt for %q, which is not a Debian package", name, pkg)
+			}
+		}
+	}
+}
