@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -187,6 +188,16 @@ func (a *app) stageProfile(name string) (dir string, cleanup func(), err error) 
 		return local, func() {}, nil
 	}
 
+	// Then the user's own profiles. Resolution, `profiles list`, and
+	// `profiles lint` all read this directory; only build did not, so a profile
+	// you wrote resolved and linted and then could not be built.
+	if a.home != "" {
+		userDir := filepath.Join(a.home, ".config", "ccvm", "profiles", name)
+		if st, err := os.Stat(userDir); err == nil && st.IsDir() {
+			return userDir, func() {}, nil
+		}
+	}
+
 	base, err := stagingDir()
 	if err != nil {
 		return "", nil, err
@@ -197,27 +208,36 @@ func (a *app) stageProfile(name string) (dir string, cleanup func(), err error) 
 	}
 	cleanup = func() { _ = os.RemoveAll(tmp) }
 
-	entries, err := profiles.FS().(interface {
-		ReadDir(string) ([]os.DirEntry, error)
-	}).ReadDir(name)
-	if err != nil {
+	if _, err := fs.Stat(profiles.FS(), name); err != nil {
 		cleanup()
 		return "", nil, fmt.Errorf("profile %q has no build inputs: %w", name, err)
 	}
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		data, err := readEmbedded(name + "/" + e.Name())
+	// Walked rather than listed: the embed directive uses `all:` precisely so a
+	// profile can ship a directory of build inputs, and flattening to top-level
+	// files dropped them silently - while a checkout of the same profile kept
+	// them, so the same name built differently depending on where you stood.
+	entries, err := collectProfileFiles(name)
+	if err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	for _, rel := range entries {
+		data, err := readEmbedded(name + "/" + rel)
 		if err != nil {
 			cleanup()
 			return "", nil, err
 		}
+		if dir := filepath.Dir(rel); dir != "." {
+			if err := os.MkdirAll(filepath.Join(tmp, dir), 0o755); err != nil {
+				cleanup()
+				return "", nil, err
+			}
+		}
 		mode := os.FileMode(0o644)
-		if strings.HasSuffix(e.Name(), ".sh") {
+		if strings.HasSuffix(rel, ".sh") {
 			mode = 0o755
 		}
-		if err := os.WriteFile(filepath.Join(tmp, e.Name()), data, mode); err != nil {
+		if err := os.WriteFile(filepath.Join(tmp, rel), data, mode); err != nil {
 			cleanup()
 			return "", nil, err
 		}
@@ -225,21 +245,14 @@ func (a *app) stageProfile(name string) (dir string, cleanup func(), err error) 
 	return tmp, cleanup, nil
 }
 
+// readEmbedded reads a file out of the compiled-in profiles.
+//
+// fs.ReadFile rather than a single Read into a size-allocated buffer: a Reader
+// is allowed to return less than it was asked for, and a Dockerfile silently
+// truncated at a byte boundary produces a build failure that points anywhere
+// but here.
 func readEmbedded(path string) ([]byte, error) {
-	f, err := profiles.FS().Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	data := make([]byte, st.Size())
-	if _, err := f.Read(data); err != nil {
-		return nil, err
-	}
-	return data, nil
+	return fs.ReadFile(profiles.FS(), path)
 }
 
 // orbstackArch asks the template machine what it runs, so the guest binaries
@@ -257,4 +270,28 @@ func orbstackArch(a *app, template string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported guest architecture %q", m)
 	}
+}
+
+// collectProfileFiles lists a profile's build inputs relative to its directory,
+// including any nested ones.
+func collectProfileFiles(name string) ([]string, error) {
+	var out []string
+	err := fs.WalkDir(profiles.FS(), name, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(name, p)
+		if err != nil {
+			return err
+		}
+		out = append(out, rel)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the build inputs for profile %q: %w", name, err)
+	}
+	return out, nil
 }

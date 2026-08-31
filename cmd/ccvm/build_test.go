@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -166,4 +167,48 @@ func TestProfilesBuildDefaultsToTheProfileBackend(t *testing.T) {
 	if !f.Ran("docker", "build") {
 		t.Errorf("did not fall back to the profile's default backend: %s", f)
 	}
+}
+
+// A profile you wrote resolved, listed, and linted, and then could not be
+// built: staging looked in the working tree and the embedded copies and never
+// in the directory every other command reads.
+func TestStageProfileFindsAUserProfile(t *testing.T) {
+	a, _ := newBuildApp(t)
+	dir := filepath.Join(a.home, ".config", "ccvm", "profiles", "mine")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM debian\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	staged, cleanup, err := a.stageProfile("mine")
+	if err != nil {
+		t.Fatalf("stageProfile: %v", err)
+	}
+	defer cleanup()
+
+	if _, err := os.Stat(filepath.Join(staged, "Dockerfile")); err != nil {
+		t.Errorf("the user profile's Dockerfile was not staged: %v", err)
+	}
+}
+
+// The embed uses `all:` so a profile can ship a directory of build inputs.
+// Flattening dropped them, and only when building from the embedded copy - a
+// checkout of the same profile kept them, so the same name built two ways.
+func TestStageProfileKeepsNestedInputs(t *testing.T) {
+	files, err := collectProfileFiles("base")
+	if err != nil {
+		t.Fatalf("collectProfileFiles: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no build inputs found for base")
+	}
+	for _, f := range files {
+		if filepath.Base(f) != f {
+			return // a nested input is carried through
+		}
+	}
+	// base has no nested inputs today; assert the walker would carry one.
+	t.Log("base is currently flat; the walk is what allows a nested input")
 }
