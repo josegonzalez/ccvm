@@ -986,3 +986,20 @@ func shortenHome(path, home string) string {
 	}
 	return dash(path)
 }
+
+// repeatable collects a flag given more than once, for values that cannot be
+// comma-separated. A package list can be split on commas; a shell command
+// cannot, because a command may contain one.
+type repeatable []string
+
+func (r *repeatable) String() string {
+	if r == nil {
+		return ""
+	}
+	return strings.Join(*r, ", ")
+}
+
+func (r *repeatable) Set(v string) error {
+	*r = append(*r, v)
+	return nil
+}

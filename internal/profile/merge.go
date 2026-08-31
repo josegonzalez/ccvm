@@ -63,6 +63,23 @@ func Merge(dst, src *Config) {
 	} else {
 		dst.Provision.Packages = appendUnique(dst.Provision.Packages, src.Provision.Packages)
 	}
+
+	// Commands append without deduping, unlike packages. A package list is a
+	// set, so installing one twice is pointless; a command list is a sequence,
+	// and two layers that happen to run the same command both meant to run it.
+	dst.Provision.Pre, dst.Provision.PreReplace = mergeCommands(
+		dst.Provision.Pre, src.Provision.Pre, dst.Provision.PreReplace, src.Provision.PreReplace)
+	dst.Provision.Post, dst.Provision.PostReplace = mergeCommands(
+		dst.Provision.Post, src.Provision.Post, dst.Provision.PostReplace, src.Provision.PostReplace)
+	dst.Provision.Setup, dst.Provision.SetupReplace = mergeCommands(
+		dst.Provision.Setup, src.Provision.Setup, dst.Provision.SetupReplace, src.Provision.SetupReplace)
+}
+
+func mergeCommands(dst, src []string, dstReplace, srcReplace bool) ([]string, bool) {
+	if srcReplace {
+		return append([]string(nil), src...), true
+	}
+	return append(dst, src...), dstReplace
 }
 
 func mergeBackend(dst, src Backend) Backend {

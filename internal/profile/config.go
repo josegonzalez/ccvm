@@ -54,12 +54,31 @@ type Resources struct {
 }
 
 type Provision struct {
+	// Pre runs before packages are installed, for anything the install itself
+	// depends on: an apt source, a proxy, a mirror.
+	Pre []string `toml:"pre"`
+	// PreReplace opts a layer out of accumulation, like PackagesReplace.
+	PreReplace bool `toml:"pre_replace"`
+
 	// Packages accumulate down the extends chain rather than replacing, since
 	// layering packages onto a parent is the main reason to inherit at all.
 	Packages []string `toml:"packages"`
 	// PackagesReplace opts a layer out of that accumulation, for a profile that
 	// genuinely needs to drop what its parent installed.
 	PackagesReplace bool `toml:"packages_replace"`
+
+	// Post runs after packages, while the project may still be absent: whether
+	// /work is populated before Setup depends on the code mode, so anything
+	// touching the project belongs in Setup instead.
+	Post []string `toml:"post"`
+	// PostReplace opts a layer out of accumulation.
+	PostReplace bool `toml:"post_replace"`
+
+	// Setup runs after the code is in place, and is the only phase where the
+	// project is present under every code mode.
+	Setup []string `toml:"setup"`
+	// SetupReplace opts a layer out of accumulation.
+	SetupReplace bool `toml:"setup_replace"`
 }
 
 // Clone returns a deep copy. Merge mutates its destination, and resolution
@@ -78,8 +97,18 @@ func (c *Config) Clone() *Config {
 		out.Env = make(map[string]string, len(c.Env))
 		maps.Copy(out.Env, c.Env)
 	}
-	if c.Provision.Packages != nil {
-		out.Provision.Packages = append([]string(nil), c.Provision.Packages...)
-	}
+	// Every slice has to be copied, or one resolution's commands leak into
+	// another's the first time append reuses a shared backing array.
+	out.Provision.Pre = cloneSlice(c.Provision.Pre)
+	out.Provision.Packages = cloneSlice(c.Provision.Packages)
+	out.Provision.Post = cloneSlice(c.Provision.Post)
+	out.Provision.Setup = cloneSlice(c.Provision.Setup)
 	return &out
+}
+
+func cloneSlice(in []string) []string {
+	if in == nil {
+		return nil
+	}
+	return append([]string(nil), in...)
 }

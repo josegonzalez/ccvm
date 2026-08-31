@@ -37,6 +37,12 @@ func cmdUp(a *app, args []string) error {
 		noCred       = fs.Bool("no-credential", false, "provision without installing a Claude credential, for building a broker machine")
 		nameOverride = fs.String("name-override", "", "use this machine name instead of deriving one from the project")
 	)
+	// Repeatable rather than comma separated: a shell command may contain a
+	// comma, so the split --install uses would corrupt one.
+	var preCmds, postCmds, setupCmds repeatable
+	fs.Var(&preCmds, "pre-install", "command to run before packages are installed, repeatable")
+	fs.Var(&postCmds, "post-install", "command to run after packages are installed, repeatable")
+	fs.Var(&setupCmds, "setup", "command to run after the code is in place, repeatable")
 	if err := fs.Parse(args); err != nil {
 		return errUsage
 	}
@@ -140,6 +146,7 @@ func cmdUp(a *app, args []string) error {
 		layers, err := provision.Plan(provision.Options{
 			Profile: *profileName, Config: cfg, Source: a.profiles,
 			Home: a.home, Project: projectDir, Install: *install,
+			Pre: preCmds, Post: postCmds, Setup: setupCmds,
 		})
 		if err != nil {
 			return err
@@ -257,6 +264,9 @@ func cmdUp(a *app, args []string) error {
 		Home:    a.home,
 		Project: projectDir,
 		Install: *install,
+		Pre:     preCmds,
+		Post:    postCmds,
+		Setup:   setupCmds,
 	})
 	if err != nil {
 		unwind()
@@ -265,7 +275,7 @@ func cmdUp(a *app, args []string) error {
 			Cleanup: "machine destroyed; nothing left running.",
 		}
 	}
-	if err := provision.Run(a.ctx, b, handle, layers, func(name string) {
+	if err := provision.Run(a.ctx, b, handle, layers.BeforeCode, func(name string) {
 		fmt.Fprintf(a.out, "  provisioning: %s\n", name)
 	}); err != nil {
 		unwind()
@@ -294,6 +304,22 @@ func cmdUp(a *app, args []string) error {
 			Backend: chosen,
 			Step:    fmt.Sprintf("put the code in place (--code %s)", mode),
 			Cause:   err,
+			Cleanup: "machine destroyed; nothing left running.",
+		}
+	}
+
+	// The setup phase runs here rather than with the rest: it is the only one
+	// where the project is present under every code mode. Numbering continues
+	// from the earlier layers so the staged files stay a single record.
+	if err := provision.RunFrom(a.ctx, b, handle, layers.Setup, len(layers.BeforeCode), func(name string) {
+		fmt.Fprintf(a.out, "  provisioning: %s\n", name)
+	}); err != nil {
+		unwind()
+		return &Fault{
+			Backend: chosen,
+			Step:    "run the setup commands",
+			Cause:   err,
+			Fix:     "fix the command and try again, or start without it by dropping --setup",
 			Cleanup: "machine destroyed; nothing left running.",
 		}
 	}
@@ -728,7 +754,7 @@ func (a *app) writeSessionRecord(b backend.Backend, h backend.Handle, spec backe
 	return b.Push(a.ctx, h, path, backend.SessionFile)
 }
 
-func (a *app) printPlan(spec backend.Spec, chosen string, cfg *profile.Config, layers []provision.Layer, yolo bool) error {
+func (a *app) printPlan(spec backend.Spec, chosen string, cfg *profile.Config, layers provision.Plans, yolo bool) error {
 	fmt.Fprintf(a.out, "would create %s\n", spec.Name)
 	fmt.Fprintf(a.out, "  backend   %s\n", chosen)
 	fmt.Fprintf(a.out, "  profile   %s\n", spec.Profile)
@@ -736,8 +762,17 @@ func (a *app) printPlan(spec backend.Spec, chosen string, cfg *profile.Config, l
 	fmt.Fprintf(a.out, "  code      %s (%s -> %s)\n", spec.CodeMode, spec.Project, spec.WorkDir)
 	fmt.Fprintf(a.out, "  resources %d cpu, %s memory, %s disk\n", spec.CPUs, spec.Memory, spec.Disk)
 	fmt.Fprintf(a.out, "  ttl       %s\n", dash(spec.TTL))
-	for i, l := range layers {
+	for i, l := range layers.BeforeCode {
 		label := "provision"
+		if i > 0 {
+			label = ""
+		}
+		fmt.Fprintf(a.out, "  %-9s %s\n", label, l.Name)
+	}
+	// Listed apart from the rest because the difference matters: only these run
+	// with the project present under every code mode.
+	for i, l := range layers.Setup {
+		label := "after code"
 		if i > 0 {
 			label = ""
 		}

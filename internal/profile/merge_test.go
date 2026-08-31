@@ -2,6 +2,7 @@ package profile_test
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/josegonzalez/ccvm/internal/profile"
@@ -126,5 +127,88 @@ func TestCloneIsDeep(t *testing.T) {
 	}
 	if orig.Provision.Packages[0] != "git" {
 		t.Error("Packages slice is shared")
+	}
+}
+
+// Commands accumulate down the chain like packages, so a child adds to what its
+// parent asked for rather than silently discarding it.
+func TestMergeAccumulatesCommands(t *testing.T) {
+	dst := &profile.Config{Provision: profile.Provision{
+		Pre:   []string{"parent pre"},
+		Post:  []string{"parent post"},
+		Setup: []string{"parent setup"},
+	}}
+	src := &profile.Config{Provision: profile.Provision{
+		Pre:   []string{"child pre"},
+		Post:  []string{"child post"},
+		Setup: []string{"child setup"},
+	}}
+	profile.Merge(dst, src)
+
+	for _, tc := range []struct {
+		name string
+		got  []string
+		want string
+	}{
+		{"pre", dst.Provision.Pre, "parent pre,child pre"},
+		{"post", dst.Provision.Post, "parent post,child post"},
+		{"setup", dst.Provision.Setup, "parent setup,child setup"},
+	} {
+		if strings.Join(tc.got, ",") != tc.want {
+			t.Errorf("%s = %v, want %q", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
+// Unlike packages, commands are a sequence rather than a set. Two layers that
+// both ask for the same command both meant it, so it must not be deduped.
+func TestMergeKeepsDuplicateCommands(t *testing.T) {
+	dst := &profile.Config{Provision: profile.Provision{Pre: []string{"make"}}}
+	src := &profile.Config{Provision: profile.Provision{Pre: []string{"make"}}}
+	profile.Merge(dst, src)
+
+	if got := dst.Provision.Pre; len(got) != 2 {
+		t.Errorf("pre = %v, want the command kept twice", got)
+	}
+}
+
+// A layer that genuinely needs to drop what a parent contributed says so.
+func TestMergeCommandReplace(t *testing.T) {
+	dst := &profile.Config{Provision: profile.Provision{
+		Pre:   []string{"parent"},
+		Setup: []string{"parent"},
+	}}
+	src := &profile.Config{Provision: profile.Provision{
+		Pre:          []string{"only"},
+		PreReplace:   true,
+		Setup:        nil,
+		SetupReplace: true,
+	}}
+	profile.Merge(dst, src)
+
+	if strings.Join(dst.Provision.Pre, ",") != "only" {
+		t.Errorf("pre = %v, want the parent's dropped", dst.Provision.Pre)
+	}
+	// Replace with an empty list clears, rather than being ignored as "unset".
+	if len(dst.Provision.Setup) != 0 {
+		t.Errorf("setup = %v, want cleared", dst.Provision.Setup)
+	}
+}
+
+// Clone must copy every slice. Sharing a backing array lets one resolution's
+// commands appear in another the first time append reuses spare capacity.
+func TestCloneDoesNotAliasCommands(t *testing.T) {
+	orig := &profile.Config{Provision: profile.Provision{
+		Pre:   []string{"a"},
+		Post:  []string{"b"},
+		Setup: []string{"c"},
+	}}
+	c := orig.Clone()
+	c.Provision.Pre[0] = "mutated"
+	c.Provision.Post[0] = "mutated"
+	c.Provision.Setup[0] = "mutated"
+
+	if orig.Provision.Pre[0] != "a" || orig.Provision.Post[0] != "b" || orig.Provision.Setup[0] != "c" {
+		t.Errorf("clone aliased the original: %+v", orig.Provision)
 	}
 }
