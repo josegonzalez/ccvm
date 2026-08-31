@@ -329,6 +329,9 @@ func (p *Proxmox) configure(ctx context.Context, h Handle, s Spec, kind string, 
 }
 
 func (p *Proxmox) Start(ctx context.Context, h Handle) error {
+	if err := p.ready(); err != nil {
+		return err
+	}
 	vmid, err := strconv.Atoi(h.ID)
 	if err != nil {
 		return err
@@ -536,6 +539,9 @@ func hasTag(tags, want string) bool {
 }
 
 func (p *Proxmox) Stop(ctx context.Context, h Handle) error {
+	if err := p.ready(); err != nil {
+		return err
+	}
 	vmid, err := strconv.Atoi(h.ID)
 	if err != nil {
 		return err
@@ -548,6 +554,9 @@ func (p *Proxmox) Stop(ctx context.Context, h Handle) error {
 }
 
 func (p *Proxmox) Destroy(ctx context.Context, h Handle) error {
+	if err := p.ready(); err != nil {
+		return err
+	}
 	vmid, err := strconv.Atoi(h.ID)
 	if err != nil {
 		return err

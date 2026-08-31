@@ -13,3 +13,9 @@ stdout 'Usage:'
 ! exec ccvm frobnicate
 stderr 'unknown command "frobnicate"'
 stderr 'Commands:'
+
+# Everything after `--` belongs to the guest. Stripping a global -v out of it
+# silently changed what the remote command does: `grep -v foo` became
+# `grep foo`, which is the opposite.
+! exec ccvm ssh no-such-machine -- grep -v foo
+stderr 'no machine named "no-such-machine"'

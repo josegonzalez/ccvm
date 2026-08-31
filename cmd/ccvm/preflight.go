@@ -18,9 +18,6 @@ type Fault struct {
 	// Cleanup describes what was left behind, so the reader knows whether they
 	// have to go tidy up.
 	Cleanup string
-	// Retryable marks faults worth another attempt with different inputs, such
-	// as a name or port collision. Auth and missing-image faults are not.
-	Retryable bool
 }
 
 func (f *Fault) Error() string {

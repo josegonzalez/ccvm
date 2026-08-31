@@ -199,3 +199,46 @@ func TestScopeString(t *testing.T) {
 		t.Errorf("ScopeOwned = %q", got)
 	}
 }
+
+// Shadowing a built-in profile is the documented way to customize it, so a typo
+// in the shadow must be reported. Falling through to the built-in hands you a
+// session built from a config you did not write, and says nothing.
+func TestLayeredReportsAMalformedUserProfile(t *testing.T) {
+	broken := fstest.MapFS{
+		"base/profile.toml": &fstest.MapFile{Data: []byte("this is not = valid = toml\n")},
+	}
+	builtin := fstest.MapFS{
+		"base/profile.toml": &fstest.MapFile{Data: []byte("description = \"the shipped one\"\n")},
+	}
+	l := profile.Layered{Sources: []profile.Source{
+		profile.FSSource{FS: broken},
+		profile.FSSource{FS: builtin},
+	}}
+
+	c, err := l.Load("base")
+	if err == nil {
+		t.Fatalf("a malformed user profile was masked; got %+v", c)
+	}
+	if errors.Is(err, profile.ErrNotFound) {
+		t.Errorf("err = %v, want a parse error rather than not-found", err)
+	}
+}
+
+// A profile the user simply does not have must still fall through, or shadowing
+// would become mandatory.
+func TestLayeredStillFallsThroughForAMissingProfile(t *testing.T) {
+	l := profile.Layered{Sources: []profile.Source{
+		profile.FSSource{FS: fstest.MapFS{}},
+		profile.FSSource{FS: fstest.MapFS{
+			"base/profile.toml": &fstest.MapFile{Data: []byte("description = \"shipped\"\n")},
+		}},
+	}}
+
+	c, err := l.Load("base")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Description != "shipped" {
+		t.Errorf("Description = %q, want the built-in", c.Description)
+	}
+}

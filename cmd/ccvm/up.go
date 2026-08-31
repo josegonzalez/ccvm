@@ -950,9 +950,26 @@ func firstNonEmpty(vals ...string) string {
 func fixFor(backendName string, err error) string {
 	msg := strings.ToLower(err.Error())
 	switch {
+	// Checked before the generic reachability cases, which would otherwise
+	// swallow them and answer with advice about a local daemon.
+	case strings.Contains(msg, "rejected token"):
+		return "check CCVM_PROXMOX_TOKEN_ID and CCVM_PROXMOX_SECRET; the token id includes the realm, as in root@pam!ccvm"
+	case strings.Contains(msg, "lacks the needed privileges"):
+		return "grant the token VM.Clone on the template and VM.Allocate on new guests"
+	case strings.Contains(msg, "orbstack is not running"):
+		return "start OrbStack, or use --backend docker"
+	case strings.Contains(msg, "no kubectl context"):
+		return "select a context with `kubectl config use-context`, or set CCVM_KUBE_CONTEXT"
+	case strings.Contains(msg, "namespace") && strings.Contains(msg, "not reachable"):
+		return "create it with `kubectl create namespace <name>`, or set CCVM_KUBE_NAMESPACE to one that exists"
+
 	case strings.Contains(msg, "not reachable"), strings.Contains(msg, "cannot connect"):
 		if backendName == "docker" {
 			return "start Docker, or use --backend orbstack"
+		}
+		if backendName == "proxmox" {
+			// Not a local daemon: it is a cluster reached by URL and token.
+			return "check CCVM_PROXMOX_URL points at the cluster and that it is reachable from here"
 		}
 		return fmt.Sprintf("check that the %s backend is running and reachable", backendName)
 	case strings.Contains(msg, "not present locally"):

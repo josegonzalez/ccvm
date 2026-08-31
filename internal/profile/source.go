@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -40,6 +41,13 @@ func (l Layered) Load(name string) (*Config, error) {
 		c, err := s.Load(name)
 		if err == nil {
 			return c, nil
+		}
+		// Only a missing profile falls through to the next source. A malformed
+		// one is reported: shadowing `base` is the documented way to customize
+		// it, and quietly running the built-in because of a typo hands you a
+		// session built from a config you did not write, with no diagnostic.
+		if !errors.Is(err, ErrNotFound) {
+			return nil, err
 		}
 		lastErr = err
 	}

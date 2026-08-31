@@ -62,6 +62,29 @@ func main() {
 
 var errUsage = errors.New("usage")
 
+// splitVerbose pulls a global --verbose out of a subcommand's arguments, since
+// it means the same thing before or after the subcommand.
+//
+// Everything after a bare `--` belongs to the guest and is left exactly as
+// typed: `ccvm ssh box -- grep -v foo` must run grep -v inside the machine
+// rather than turning ccvm verbose and silently inverting what grep does.
+func splitVerbose(args []string) ([]string, bool) {
+	verbose := false
+	out := args[:0]
+	for i, a := range args {
+		if a == "--" {
+			out = append(out, args[i:]...)
+			break
+		}
+		if a == "-v" || a == "--verbose" {
+			verbose = true
+			continue
+		}
+		out = append(out, a)
+	}
+	return out, verbose
+}
+
 func realMain(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
 		usage(stdout)
@@ -74,17 +97,7 @@ func realMain(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	name := args[0]
 	rest := args[1:]
 
-	// A global --verbose before or after the subcommand means the same thing.
-	verbose := false
-	filtered := rest[:0]
-	for _, a := range rest {
-		if a == "-v" || a == "--verbose" {
-			verbose = true
-			continue
-		}
-		filtered = append(filtered, a)
-	}
-	rest = filtered
+	rest, verbose := splitVerbose(rest)
 
 	for _, c := range commands {
 		if c.name != name {
