@@ -139,16 +139,20 @@ and personal notes that mean nothing inside a disposable Debian guest.
 ## Getting the code in
 
 `--code` picks how a project reaches the machine. The default is the cheapest
-mode that still carries uncommitted work.
+mode a backend can serve while still carrying uncommitted work: `mount` on
+docker and orbstack, `rsync` on proxmox, `git` on kubernetes.
 
 | Mode | What it does | Backends |
 | --- | --- | --- |
-| `mount` | The host directory is attached live. Nothing is copied. | docker, orbstack, proxmox |
+| `mount` | The host directory is attached live. Nothing is copied. | docker, orbstack |
 | `rsync` | Copied in at spawn and back out when the session ends. | all |
 | `git` | Cloned from origin at the branch you have checked out. Uncommitted work stays behind. | all |
 
-kubernetes has no host filesystem to reach, so `mount` there is refused rather
-than silently empty.
+`mount` needs a filesystem the host and the guest share, which is why it exists
+on the two local backends and nowhere else. kubernetes has no host filesystem to
+reach at all; proxmox runs the guest on a remote cluster while your project sits
+on this machine. Both refuse `mount` rather than accepting it and leaving `/work`
+silently empty.
 
 Under `rsync` the machine holds the only copy of anything edited inside it, so
 `ccvm rm` returns changes before destroying and refuses if it cannot.

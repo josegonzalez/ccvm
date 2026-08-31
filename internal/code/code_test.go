@@ -22,7 +22,9 @@ func TestCheck(t *testing.T) {
 	}{
 		{code.Mount, "docker", false},
 		{code.Mount, "orbstack", false},
-		{code.Mount, "proxmox", false},
+		// Refused, not silently empty: the project is on this machine and the
+		// guest is on a remote cluster, with no filesystem in common.
+		{code.Mount, "proxmox", true},
 		{code.Mount, "k8s", true},
 		{code.Git, "k8s", false},
 		{code.Rsync, "k8s", false},

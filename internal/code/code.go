@@ -28,9 +28,13 @@ const (
 // Supported maps each mode to the backends that can serve it.
 //
 // kubernetes has no host filesystem to reach, so mount is not merely
-// unimplemented there; it cannot exist.
+// unimplemented there; it cannot exist. The same is true of proxmox for a
+// different reason: the project is on this machine and the guest is on a
+// remote cluster, with no filesystem in common to attach. Live editing there
+// is what rsync and a reverse tunnel are for, so mount is refused rather than
+// accepted and silently producing an empty /work.
 var Supported = map[string][]string{
-	Mount: {"docker", "orbstack", "proxmox"},
+	Mount: {"docker", "orbstack"},
 	Rsync: {"docker", "orbstack", "proxmox", "k8s"},
 	Git:   {"docker", "orbstack", "proxmox", "k8s"},
 }

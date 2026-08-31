@@ -57,9 +57,12 @@ func (s FSSource) Load(name string) (*Config, error) {
 func Builtin() *Config {
 	return &Config{
 		Defaults: Defaults{
-			Backend:  "docker",
-			CodeMode: "mount",
-			TTL:      "12h",
+			Backend: "docker",
+			// No CodeMode here on purpose. It is the last layer consulted
+			// before code.DefaultFor, so any value set here shadows the
+			// per-backend default and hands every backend "mount" - which is
+			// silently empty on proxmox and refused outright on k8s.
+			TTL: "12h",
 		},
 		Resources: Resources{CPUs: 2, Memory: "4G", Disk: "16G"},
 	}

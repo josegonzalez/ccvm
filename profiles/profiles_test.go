@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/josegonzalez/ccvm/internal/code"
 	"github.com/josegonzalez/ccvm/internal/profile"
 	"github.com/josegonzalez/ccvm/profiles"
 )
@@ -42,8 +43,14 @@ func TestBuiltinGoInheritsFromBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if c.Defaults.CodeMode != "mount" {
-		t.Errorf("CodeMode = %q, want it inherited from base", c.Defaults.CodeMode)
+	if c.Defaults.TTL != "12h" {
+		t.Errorf("TTL = %q, want it inherited from base", c.Defaults.TTL)
+	}
+	// Deliberately unset all the way down, so code.DefaultFor picks per backend.
+	// A value here would shadow it and hand proxmox and k8s a mode neither can
+	// serve.
+	if c.Defaults.CodeMode != "" {
+		t.Errorf("CodeMode = %q, want it left to the backend", c.Defaults.CodeMode)
 	}
 	if c.Resources.Memory != "8G" {
 		t.Errorf("Memory = %q, want the go profile's override", c.Resources.Memory)
@@ -84,6 +91,32 @@ func TestBaseImageDoesNotBakeAGuide(t *testing.T) {
 	for line := range strings.SplitSeq(string(data), "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "COPY") && strings.Contains(line, "CLAUDE.md") {
 			t.Errorf("Dockerfile bakes a CLAUDE.md again: %q", strings.TrimSpace(line))
+		}
+	}
+}
+
+// Every shipped profile must resolve to a code mode its backend can actually
+// serve. This is the regression that shipped: base pinned code_mode = "mount",
+// which shadowed code.DefaultFor and handed proxmox a mode that silently
+// produced an empty /work and k8s one it refuses outright.
+func TestShippedProfilesLeaveTheCodeModeToTheBackend(t *testing.T) {
+	src := profile.FSSource{FS: profiles.FS()}
+
+	for _, name := range []string{"base", "go", "node"} {
+		c, err := profile.Resolve(name, src)
+		if err != nil {
+			t.Fatalf("Resolve(%s): %v", name, err)
+		}
+		for _, b := range []string{"docker", "orbstack", "proxmox", "k8s"} {
+			// The resolution ccvm up performs: an explicit flag, then the
+			// profile chain, then the per-backend default.
+			mode := c.Defaults.CodeMode
+			if mode == "" {
+				mode = code.DefaultFor(b)
+			}
+			if err := code.Check(mode, b); err != nil {
+				t.Errorf("profile %q on %s resolves to %q, which it cannot serve: %v", name, b, mode, err)
+			}
 		}
 	}
 }

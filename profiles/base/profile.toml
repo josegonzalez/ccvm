@@ -13,10 +13,11 @@ template = "ccvm-base"
 lxc_template = 9000
 vm_template  = 9100
 
+# No code_mode: it would shadow the per-backend default, which is mount on
+# docker and orbstack, rsync on proxmox, and git on k8s.
 [defaults]
-backend   = "docker"
-code_mode = "mount"
-ttl       = "12h"
+backend = "docker"
+ttl     = "12h"
 
 [resources]
 cpus   = 2
