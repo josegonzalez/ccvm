@@ -48,9 +48,12 @@ type Fake struct {
 	ListDelay time.Duration
 	// PreflightErr makes Preflight fail, for testing how callers report it.
 	PreflightErr error
-	AutoRemove   bool
-	Destroyed    []string
-	CreateCalls  int
+	// BareGuest models a machine cloned from a template that never had the
+	// guest binaries installed, which is the proxmox case.
+	BareGuest   bool
+	AutoRemove  bool
+	Destroyed   []string
+	CreateCalls int
 }
 
 var (
@@ -87,7 +90,15 @@ func (f *Fake) Create(ctx context.Context, s backend.Spec) (backend.Handle, erro
 		Created: s.CreatedAt,
 		SSH:     s.Name,
 	}
+	// A real session image carries the guest binaries: docker and kubernetes
+	// bake them, and the orbstack template build pushes them. Modelling a guest
+	// without them by default would make every test exercise the install path
+	// that only proxmox actually needs. BareGuest opts into that case.
 	f.files[s.Name] = map[string][]byte{}
+	if !f.BareGuest {
+		f.files[s.Name]["/usr/local/bin/ccvm-done"] = []byte("#!/bin/sh\n")
+		f.files[s.Name]["/usr/local/bin/ccvm-init"] = []byte("#!/bin/sh\n")
+	}
 	return backend.Handle{Backend: f.BackendName, Name: s.Name, ID: "fake-" + s.Name}, nil
 }
 
@@ -137,11 +148,18 @@ func (f *Fake) Exec(ctx context.Context, h backend.Handle, argv ...string) ([]by
 			}
 		}
 	}
-	if len(argv) == 3 && argv[0] == "test" && argv[1] == "-f" {
+	// -x as well as -f: callers check for an executable before installing one,
+	// and answering success for a file that was never pushed would let that
+	// check pass over a guest that has nothing.
+	if len(argv) == 3 && argv[0] == "test" && (argv[1] == "-f" || argv[1] == "-x") {
 		if _, ok := f.files[h.Name][argv[2]]; ok {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("test -f %s: no such file", argv[2])
+		return nil, fmt.Errorf("test %s %s: no such file", argv[1], argv[2])
+	}
+	// The guest architecture, so callers can pick a binary for it.
+	if len(argv) == 2 && argv[0] == "uname" && argv[1] == "-m" {
+		return []byte("x86_64\n"), nil
 	}
 	if len(argv) > 0 && (argv[0] == "mkdir" || argv[0] == "chmod" || argv[0] == "chown") {
 		return nil, nil

@@ -66,6 +66,9 @@ func TestProfilesBuildOrbstackReplacesAndProvisions(t *testing.T) {
 	a, f := newBuildApp(t)
 	f.On("orbctl", "delete").Stdout("")
 	f.On("orbctl", "create").Stdout("")
+	// Before the catch-all: rules match in declaration order, and the build
+	// asks the template what architecture it is before pushing binaries to it.
+	f.OnContaining("orbctl", "run", "uname").Stdout("aarch64\n")
 	f.On("orbctl", "run").Stdout("")
 	f.On("orbctl", "push").Stdout("")
 	f.On("orbctl", "stop").Stdout("")

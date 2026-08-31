@@ -260,6 +260,17 @@ func cmdUp(a *app, args []string) error {
 		}
 	}
 
+	// Before the guide, which tells Claude to run ccvm-done: a guest that has
+	// been told about a command it does not have is worse than one that has not.
+	if err := a.installGuestBinaries(b, handle); err != nil {
+		unwind()
+		return &Fault{
+			Backend: chosen, Step: "install the guest binaries", Cause: err,
+			Fix:     "build them with `make build`, or bake them into the template",
+			Cleanup: "machine destroyed; nothing left running.",
+		}
+	}
+
 	if err := a.seedGuide(b, handle, guide.Options{
 		Profile: *profileName, Source: a.profiles,
 		Home: a.home, Project: projectDir, File: *claudeMD,

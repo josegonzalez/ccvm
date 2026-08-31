@@ -1361,3 +1361,64 @@ func TestUpDestroysMachineWhenSetupCommandFails(t *testing.T) {
 		t.Errorf("Destroyed = %v, want the machine cleaned up", f.Destroyed)
 	}
 }
+
+// A proxmox guest is cloned from a template built by hand, and the README's own
+// recipe installs claude, git, tmux, and sshd - not ccvm-done. Without it the
+// guide tells Claude to run a command that is not there, and the session can
+// only be ended from the host.
+func TestUpInstallsGuestBinariesWhenTheImageLacksThem(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	f.BareGuest = true
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	// Stand in for a release that ships the guest binaries beside ccvm.
+	for _, name := range []string{"ccvm-done", "ccvm-init"} {
+		writeFakeGuestBinary(t, name+"-linux-amd64")
+	}
+
+	if err := cmdUp(a, []string{"-detach", dir}); err != nil {
+		t.Fatalf("cmdUp: %v", err)
+	}
+
+	for _, name := range []string{"ccvm-done", "ccvm-init"} {
+		if _, ok := f.FileIn("cc-demo", "/usr/local/bin/"+name); !ok {
+			t.Errorf("%s was not installed into a guest that lacked it", name)
+		}
+	}
+}
+
+// An image that already carries them is the common case, and paying for a push
+// on every spawn would be waste.
+func TestUpLeavesExistingGuestBinariesAlone(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	if err := cmdUp(a, []string{"-detach", dir}); err != nil {
+		t.Fatalf("cmdUp: %v", err)
+	}
+
+	got, ok := f.FileIn("cc-demo", "/usr/local/bin/ccvm-done")
+	if !ok {
+		t.Fatal("the image's ccvm-done disappeared")
+	}
+	if string(got) != "#!/bin/sh\n" {
+		t.Error("an image that already had the binary was pushed over anyway")
+	}
+}
+
+// writeFakeGuestBinary puts a stand-in next to the test binary, which is where
+// guestBinaryPath looks first.
+func writeFakeGuestBinary(t *testing.T, file string) {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Skip("cannot locate the test binary")
+	}
+	path := filepath.Join(filepath.Dir(exe), file)
+	if err := os.WriteFile(path, []byte("stand-in\n"), 0o755); err != nil {
+		t.Skipf("cannot stage a guest binary next to the test binary: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(path) })
+}

@@ -125,10 +125,18 @@ func (a *app) buildOrbstackTemplate(name string, cfg *profile.Config) error {
 	}
 
 	// The guest binaries come from this repo rather than a download.
+	//
+	// The architecture comes from the machine rather than being assumed: an
+	// Intel Mac runs amd64 guests, and pushing an arm64 binary there installs
+	// cleanly and then fails with "Exec format error" from inside the session.
+	arch, err := orbstackArch(a, template)
+	if err != nil {
+		return err
+	}
 	for _, bin := range []string{"ccvm-done", "ccvm-init"} {
-		src := filepath.Join("dist", bin+"-linux-arm64")
-		if _, err := os.Stat(src); err != nil {
-			fmt.Fprintf(a.err, "ccvm: %s not built; run `make build` and rebuild this profile\n", src)
+		src, err := guestBinaryPath(bin, arch)
+		if err != nil {
+			fmt.Fprintf(a.err, "ccvm: %v\n", err)
 			continue
 		}
 		dst := "/usr/local/bin/" + bin
@@ -232,4 +240,21 @@ func readEmbedded(path string) ([]byte, error) {
 		return nil, err
 	}
 	return data, nil
+}
+
+// orbstackArch asks the template machine what it runs, so the guest binaries
+// match it rather than the architecture this repo happened to build last.
+func orbstackArch(a *app, template string) (string, error) {
+	out, err := a.runner.Run(a.ctx, "orbctl", "run", "-m", template, "uname", "-m")
+	if err != nil {
+		return "", fmt.Errorf("determine the architecture of %s: %w", template, err)
+	}
+	switch m := strings.TrimSpace(string(out)); m {
+	case "x86_64", "amd64":
+		return "amd64", nil
+	case "aarch64", "arm64":
+		return "arm64", nil
+	default:
+		return "", fmt.Errorf("unsupported guest architecture %q", m)
+	}
 }
