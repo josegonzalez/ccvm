@@ -68,8 +68,10 @@ spec:
           restartPolicy: Never
           containers:
             - name: reaper
-              # The same image sessions run, so ccvm and kubectl are present.
-              image: ccvm/base:latest
+              # Not the session image: that one carries ccvm-done and ccvm-init
+              # for the guest, but no ccvm and no kubectl, so this CronJob could
+              # never start. Built by `make reaper-image`.
+              image: ccvm/reaper:latest
               imagePullPolicy: IfNotPresent
               command: ["/usr/local/bin/ccvm", "gc"]
               env:

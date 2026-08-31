@@ -1,3 +1,6 @@
 *
 !dist/ccvm-done-linux-*
 !dist/ccvm-init-linux-*
+# The reaper image copies the host binary in; without this the COPY finds
+# nothing, since the first line excludes everything.
+!dist/ccvm-linux-*

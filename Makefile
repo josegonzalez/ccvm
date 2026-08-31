@@ -93,6 +93,13 @@ IMAGE ?= ccvm/base:latest
 image: build
 	docker build -f profiles/base/Dockerfile -t $(IMAGE) .
 
+# The in-cluster reaper. Separate from the session image so Claude's machine
+# does not carry a Kubernetes client it has no business holding.
+REAPER_IMAGE ?= ccvm/reaper:latest
+.PHONY: reaper-image
+reaper-image: build
+	docker build -f k8s/reaper.Dockerfile -t $(REAPER_IMAGE) .
+
 .PHONY: clean
 clean:
 	rm -rf $(DIST) coverage.out coverage.shipped.out

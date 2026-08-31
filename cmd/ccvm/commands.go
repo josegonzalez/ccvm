@@ -369,6 +369,7 @@ func cmdGC(a *app, args []string) error {
 	ttl := fs.Duration("ttl", 12*time.Hour, "fallback lifetime for machines with no recorded TTL")
 	dryRun := fs.Bool("dry-run", false, "report what would be destroyed without destroying it")
 	deadline := fs.Duration("deadline", 90*time.Second, "give up after this long")
+	force := fs.Bool("force", false, "destroy even when changes cannot be returned to the host")
 	if err := fs.Parse(args); err != nil {
 		return errUsage
 	}
@@ -402,6 +403,20 @@ func cmdGC(a *app, args []string) error {
 		b, err := a.backend(m.Backend)
 		if err != nil {
 			return err
+		}
+
+		// Under rsync the machine holds the only copy of anything edited
+		// inside it, and the reaper runs unattended - there is nobody to
+		// prompt. A machine whose changes cannot be returned is left alone and
+		// reported, rather than destroyed on a timer; `ccvm gc --force` is how
+		// you say to discard it anyway.
+		if err := a.syncBack(b, m); err != nil {
+			if !*force {
+				fmt.Fprintf(a.err, "ccvm: keeping %s: %v\n", m.Name, err)
+				fmt.Fprintf(a.err, "      Recover with `ccvm ssh %s`, or discard with `ccvm gc --force`\n", m.Name)
+				continue
+			}
+			fmt.Fprintf(a.err, "ccvm: discarding unsynced changes in %s: %v\n", m.Name, err)
 		}
 
 		if err := b.Destroy(a.ctx, m.Handle()); err != nil {
@@ -451,7 +466,7 @@ func (a *app) gcInstall(args []string) error {
 	fmt.Fprintln(a.out, "This covers docker and orbstack, which run on this Mac.")
 	fmt.Fprintln(a.out, "proxmox and kubernetes need their own schedules, since a Mac that is")
 	fmt.Fprintln(a.out, "asleep reaps nothing and cannot reach a guest to check it:")
-	fmt.Fprintln(a.out, "  kubectl apply -f k8s/reaper.yaml")
+	fmt.Fprintln(a.out, "  make reaper-image && kubectl apply -f k8s/reaper.yaml")
 	fmt.Fprintln(a.out, "  scp k8s/proxmox-reaper.cron root@<node>:/etc/cron.d/ccvm-reaper")
 	return nil
 }

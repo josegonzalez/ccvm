@@ -971,3 +971,87 @@ func TestBuildBrokerProvisionsWithoutACredential(t *testing.T) {
 		t.Errorf("TTL = %q, want the broker kept", s.TTL)
 	}
 }
+
+// Under rsync the machine holds the only copy of anything edited in it. The
+// reaper runs unattended on a timer, so destroying one whose changes cannot be
+// returned is silent data loss - the exact case `ccvm rm` already refuses.
+func TestGCKeepsMachinesWhoseChangesCannotBeReturned(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, errOut := newTestApp(t, f)
+	seedMachine(t, f, "cc-dirty", session.Session{
+		Name: "cc-dirty", Created: time.Now().Add(-24 * time.Hour), TTL: "1h",
+		CodeMode: "rsync", Project: t.TempDir(), WorkDir: "/work",
+	})
+	// rsync runs over ssh against a machine that is not really there.
+	f.ExecErrOn = "rsync"
+
+	if err := cmdGC(a, nil); err != nil {
+		t.Fatalf("cmdGC: %v", err)
+	}
+	if len(f.Destroyed) != 0 {
+		t.Errorf("Destroyed = %v, want the machine left alone", f.Destroyed)
+	}
+	if !strings.Contains(errOut.String(), "cc-dirty") {
+		t.Errorf("stderr = %q, want it to name the machine it kept", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "--force") {
+		t.Errorf("stderr = %q, want it to say how to discard deliberately", errOut.String())
+	}
+}
+
+// --force is the deliberate discard, matching `ccvm rm --force`. Without it a
+// machine that can never be synced back would never be collected.
+func TestGCForceDestroysDespiteUnsyncedChanges(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, errOut := newTestApp(t, f)
+	seedMachine(t, f, "cc-dirty", session.Session{
+		Name: "cc-dirty", Created: time.Now().Add(-24 * time.Hour), TTL: "1h",
+		CodeMode: "rsync", Project: t.TempDir(), WorkDir: "/work",
+	})
+	f.ExecErrOn = "rsync"
+
+	if err := cmdGC(a, []string{"-force"}); err != nil {
+		t.Fatalf("cmdGC: %v", err)
+	}
+	if len(f.Destroyed) != 1 {
+		t.Errorf("Destroyed = %v, want it destroyed anyway", f.Destroyed)
+	}
+	if !strings.Contains(errOut.String(), "discarding") {
+		t.Errorf("stderr = %q, want the discard said out loud", errOut.String())
+	}
+}
+
+// A mount-mode machine has nothing to return, so the reaper must not be made
+// timid by the new check.
+func TestGCStillReapsWhenThereIsNothingToSyncBack(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	seedMachine(t, f, "cc-mounted", session.Session{
+		Name: "cc-mounted", Created: time.Now().Add(-24 * time.Hour), TTL: "1h",
+		CodeMode: "mount", Project: t.TempDir(), WorkDir: "/work",
+	})
+
+	if err := cmdGC(a, nil); err != nil {
+		t.Fatalf("cmdGC: %v", err)
+	}
+	if len(f.Destroyed) != 1 {
+		t.Errorf("Destroyed = %v, want the expired machine collected", f.Destroyed)
+	}
+}
+
+// The reaper must not run from the session image. That image carries the guest
+// binaries and neither ccvm nor kubectl, so pointing the CronJob at it produced
+// a container that could never start - failing quietly every two minutes.
+func TestReaperManifestDoesNotUseTheSessionImage(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "k8s", "reaper.yaml"))
+	if err != nil {
+		t.Fatalf("read reaper.yaml: %v", err)
+	}
+	body := string(data)
+	if strings.Contains(body, "ccvm/base") {
+		t.Error("reaper.yaml points at the session image again; it has no ccvm binary")
+	}
+	if !strings.Contains(body, "ccvm/reaper") {
+		t.Error("reaper.yaml no longer names the reaper image")
+	}
+}

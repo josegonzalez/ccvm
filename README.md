@@ -288,9 +288,15 @@ The cluster backends need their own schedules, since a sleeping Mac reaps
 nothing and cannot reach a guest to check it:
 
 ```
+make reaper-image                    # ccvm/reaper:latest, push it where the cluster can pull it
 kubectl apply -f k8s/reaper.yaml
 scp k8s/proxmox-reaper.cron root@<node>:/etc/cron.d/ccvm-reaper
 ```
+
+The reaper runs from its own image rather than the session one. A session image
+carries `ccvm-done` and `ccvm-init` for the guest, not `ccvm` and not a
+Kubernetes client, and there is no reason to put a cluster credential inside the
+machine Claude is running in.
 
 Both are verified. The kubernetes manifest was applied to a real cluster, with
 RBAC that grants deleting jobs and exec and nothing else — not deleting pods,
