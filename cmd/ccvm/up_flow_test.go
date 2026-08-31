@@ -1545,3 +1545,43 @@ func TestUpDoesNotClaimCleanupWhenNothingWasCreated(t *testing.T) {
 		t.Errorf("error claims cleanup that never happened:\n%s", err)
 	}
 }
+
+// Replacing authorized_keys revoked whatever the template already authorized.
+// On proxmox that is the key ccvm itself connects with, so the next call failed
+// and was reported as a guest that will not accept a key at all.
+func TestUpKeepsTheTemplatesExistingAuthorizedKey(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	existing := "ssh-ed25519 AAAAtemplatekey builder@template\n"
+	f.SeedImageFile("/root/.ssh/authorized_keys", []byte(existing))
+
+	if err := cmdUp(a, []string{"-detach", dir}); err != nil {
+		t.Fatalf("cmdUp: %v", err)
+	}
+
+	got, ok := f.FileIn("cc-demo", "/root/.ssh/authorized_keys")
+	if !ok {
+		t.Fatal("no authorized_keys in the guest")
+	}
+	if !strings.Contains(string(got), "AAAAtemplatekey") {
+		t.Error("the template's own key was revoked, which is how ccvm reaches a proxmox guest")
+	}
+	if !strings.Contains(string(got), "ccvm") {
+		t.Error("the session key was not added")
+	}
+}
+
+// Merging must be idempotent, or reattaching to a machine grows the file.
+func TestMergeAuthorizedKeyIsIdempotent(t *testing.T) {
+	line := "ssh-ed25519 AAAAsession ccvm"
+	once := mergeAuthorizedKey("", line)
+	twice := mergeAuthorizedKey(once, line)
+	if once != twice {
+		t.Errorf("merging twice changed the file:\n%q\n%q", once, twice)
+	}
+	if strings.Count(twice, "AAAAsession") != 1 {
+		t.Errorf("key duplicated: %q", twice)
+	}
+}

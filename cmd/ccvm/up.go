@@ -559,13 +559,22 @@ func (a *app) installSSHKey(b backend.Backend, h backend.Handle) error {
 		return err
 	}
 
+	const dir = "/root/.ssh"
+
+	// Merged with whatever the template already authorized, not written over.
+	// On proxmox ccvm reaches the guest with CCVM_PROXMOX_SSH_KEY, which is
+	// whatever the template was built with; replacing authorized_keys revokes
+	// that key, and the very next call - the chown below - then fails and is
+	// reported as a guest that will not accept a key at all.
+	content := mergeAuthorizedKey(a.existingAuthorizedKeys(b, h), line)
+
 	tmp, err := os.CreateTemp("", "ccvm-authorized-keys-*")
 	if err != nil {
 		return err
 	}
 	path := tmp.Name()
 	defer os.Remove(path)
-	if _, err := tmp.WriteString(line); err != nil {
+	if _, err := tmp.WriteString(content); err != nil {
 		_ = tmp.Close()
 		return err
 	}
@@ -574,7 +583,6 @@ func (a *app) installSSHKey(b backend.Backend, h backend.Handle) error {
 		return err
 	}
 
-	const dir = "/root/.ssh"
 	if _, err := b.Exec(a.ctx, h, "mkdir", "-p", dir); err != nil {
 		return fmt.Errorf("create %s: %w", dir, err)
 	}
@@ -695,6 +703,44 @@ func (a *app) seedGuide(b backend.Backend, h backend.Handle, o guide.Options) er
 		fmt.Fprintf(a.err, "ccvm: could not seed the session CLAUDE.md: %v\n", err)
 	}
 	return nil
+}
+
+// existingAuthorizedKeys reads what the guest already authorizes. A template
+// that authorizes nothing is the normal case, so a failure here is not one.
+func (a *app) existingAuthorizedKeys(b backend.Backend, h backend.Handle) string {
+	tmp, err := os.CreateTemp("", "ccvm-existing-keys-*")
+	if err != nil {
+		return ""
+	}
+	path := tmp.Name()
+	_ = tmp.Close()
+	defer func() { _ = os.Remove(path) }()
+
+	if err := b.Pull(a.ctx, h, "/root/.ssh/authorized_keys", path); err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// mergeAuthorizedKey adds a key to a file that may already hold others, and is
+// idempotent so re-running against the same machine does not duplicate lines.
+func mergeAuthorizedKey(existing, line string) string {
+	want := strings.TrimSpace(line)
+	var out []string
+	for l := range strings.SplitSeq(existing, "\n") {
+		if t := strings.TrimSpace(l); t != "" {
+			if t == want {
+				return existing
+			}
+			out = append(out, t)
+		}
+	}
+	out = append(out, want)
+	return strings.Join(out, "\n") + "\n"
 }
 
 // pushString writes content into the machine at the given mode.

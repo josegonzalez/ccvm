@@ -50,7 +50,10 @@ type Fake struct {
 	PreflightErr error
 	// BareGuest models a machine cloned from a template that never had the
 	// guest binaries installed, which is the proxmox case.
-	BareGuest   bool
+	BareGuest bool
+	// ImageFiles are files the image or template already carried, applied to
+	// every machine at Create.
+	ImageFiles  map[string][]byte
 	AutoRemove  bool
 	Destroyed   []string
 	CreateCalls int
@@ -95,6 +98,10 @@ func (f *Fake) Create(ctx context.Context, s backend.Spec) (backend.Handle, erro
 	// without them by default would make every test exercise the install path
 	// that only proxmox actually needs. BareGuest opts into that case.
 	f.files[s.Name] = map[string][]byte{}
+	// What the image or template already carried, before ccvm touched it.
+	for path, data := range f.ImageFiles {
+		f.files[s.Name][path] = append([]byte(nil), data...)
+	}
 	if !f.BareGuest {
 		f.files[s.Name]["/usr/local/bin/ccvm-done"] = []byte("#!/bin/sh\n")
 		f.files[s.Name]["/usr/local/bin/ccvm-init"] = []byte("#!/bin/sh\n")
@@ -274,4 +281,15 @@ func (f *Fake) FileIn(name, path string) ([]byte, bool) {
 	defer f.mu.Unlock()
 	b, ok := f.files[name][path]
 	return b, ok
+}
+
+// SeedImageFile registers a file the image already carries, so it is present
+// in every machine this fake creates.
+func (f *Fake) SeedImageFile(path string, data []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ImageFiles == nil {
+		f.ImageFiles = map[string][]byte{}
+	}
+	f.ImageFiles[path] = data
 }
