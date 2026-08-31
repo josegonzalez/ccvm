@@ -81,7 +81,7 @@ func TestBaseImageDoesNotBakeAGuide(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read Dockerfile: %v", err)
 	}
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "COPY") && strings.Contains(line, "CLAUDE.md") {
 			t.Errorf("Dockerfile bakes a CLAUDE.md again: %q", strings.TrimSpace(line))
 		}
