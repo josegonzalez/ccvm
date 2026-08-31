@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/josegonzalez/ccvm/guest"
 	"github.com/josegonzalez/ccvm/internal/profile"
 	"github.com/josegonzalez/ccvm/profiles"
 )
@@ -142,11 +141,6 @@ func (a *app) buildOrbstackTemplate(name string, cfg *profile.Config) error {
 		}
 	}
 
-	// Seeded so Claude discovers ccvm-done without being told the command name.
-	if err := a.pushGuestGuide(template); err != nil {
-		fmt.Fprintf(a.err, "ccvm: could not seed the guest CLAUDE.md: %v\n", err)
-	}
-
 	// Clones start from a stopped template, and leaving it running wastes
 	// memory on the Mac for a machine nobody uses directly.
 	if _, err := a.runner.Run(a.ctx, "orbctl", "stop", template); err != nil {
@@ -155,38 +149,6 @@ func (a *app) buildOrbstackTemplate(name string, cfg *profile.Config) error {
 
 	fmt.Fprintf(a.out, "built %s; sessions clone from it\n", template)
 	return nil
-}
-
-func (a *app) pushGuestGuide(template string) error {
-	// Embedded, not read from disk: `ccvm profiles build` runs from wherever
-	// the user is, and a CWD-relative read only worked from a checkout.
-	data := []byte(guest.Guide)
-	base, err := stagingDir()
-	if err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(base, "ccvm-guide-*.md")
-	if err != nil {
-		return err
-	}
-	path := tmp.Name()
-	defer func() { _ = os.Remove(path) }()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	// Closed before the file is read back, so a failure here means the content
-	// may be short and has to surface rather than be dropped.
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-
-	if _, err := a.runner.Run(a.ctx, "orbctl", "run", "-m", template, "-u", "root",
-		"mkdir", "-p", "/root/.claude"); err != nil {
-		return err
-	}
-	_, err = a.runner.Run(a.ctx, "orbctl", "push", "-m", template, path, "/root/.claude/CLAUDE.md")
-	return err
 }
 
 // stagingDir is where build inputs are materialized on the host.

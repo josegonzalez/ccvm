@@ -1255,3 +1255,109 @@ func TestUpLoginPathInstallsAndTightensTheCredential(t *testing.T) {
 		t.Errorf("AuthMode = %q, want the login recorded", rec.AuthMode)
 	}
 }
+
+// Every backend gets the guide now, written at spawn rather than baked, so a
+// machine built from any image can still tell Claude how to end the session.
+func TestUpSeedsTheComposedGuide(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	if err := os.MkdirAll(filepath.Join(dir, ".ccvm"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".ccvm", "CLAUDE.md"),
+		[]byte("prefer tabs in this repo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cmdUp(a, []string{"-detach", dir}); err != nil {
+		t.Fatalf("cmdUp: %v", err)
+	}
+
+	data, ok := f.FileIn("cc-demo", "/root/.claude/CLAUDE.md")
+	if !ok {
+		t.Fatal("no CLAUDE.md written into the machine")
+	}
+	got := string(data)
+	if !strings.Contains(got, "ccvm-done") {
+		t.Error("composed guide lost ccvm's own layer, so ccvm-done is undiscoverable")
+	}
+	if !strings.Contains(got, "prefer tabs in this repo") {
+		t.Error("composed guide dropped the project layer")
+	}
+	// ccvm's layer frames the machine the later ones describe work inside of.
+	if strings.Index(got, "ccvm-done") > strings.Index(got, "prefer tabs") {
+		t.Error("project layer came before ccvm's")
+	}
+}
+
+// A --claude-md the user named and ccvm cannot read stops the spawn rather than
+// starting a session quietly missing the guidance they asked for.
+func TestUpFailsOnUnreadableClaudeMD(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	err := cmdUp(a, []string{"-detach", "-claude-md", filepath.Join(dir, "nope.md"), dir})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if len(f.Destroyed) != 1 {
+		t.Errorf("Destroyed = %v, want the machine cleaned up", f.Destroyed)
+	}
+}
+
+// Repeated flags collect rather than overwrite, and the dry run separates what
+// runs before the code from what runs after, since that difference decides
+// whether a command can see the project at all.
+func TestUpDryRunListsCommandPhases(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, out, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	err := cmdUp(a, []string{
+		"-dry-run",
+		"-pre-install", "echo one",
+		"-pre-install", "echo two",
+		"-setup", "make deps",
+		dir,
+	})
+	if err != nil {
+		t.Fatalf("cmdUp: %v", err)
+	}
+
+	got := out.String()
+	for _, want := range []string{"--pre-install[0]", "--pre-install[1]", "--setup[0]", "after code"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("dry run missing %q:\n%s", want, got)
+		}
+	}
+	if f.CreateCalls != 0 {
+		t.Error("dry run created a machine")
+	}
+}
+
+// A setup command fails after the code is already in place, so it unwinds from
+// further along than any other provisioning failure. The machine still has to
+// go: a half-provisioned session fails later for reasons that no longer point
+// at the cause.
+func TestUpDestroysMachineWhenSetupCommandFails(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	// Matches the `sh -e <path>` that runs a layer, and nothing staging does.
+	f.ExecErrOn = "-e"
+
+	err := cmdUp(a, []string{"-detach", "-setup", "make deps", dir})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "make deps") {
+		t.Errorf("err = %v, want it to name the failing command", err)
+	}
+	if len(f.Destroyed) != 1 {
+		t.Errorf("Destroyed = %v, want the machine cleaned up", f.Destroyed)
+	}
+}

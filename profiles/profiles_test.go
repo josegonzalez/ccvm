@@ -1,6 +1,9 @@
 package profiles_test
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/josegonzalez/ccvm/internal/profile"
@@ -66,5 +69,21 @@ func TestBuiltinNodeInheritsUnsetResources(t *testing.T) {
 	}
 	if c.Resources.Memory != "8G" {
 		t.Errorf("Memory = %q, want node's override", c.Resources.Memory)
+	}
+}
+
+// The guide is composed and written at spawn, on every backend. Baking a copy
+// into the image as well would give the same path two sources of truth, and the
+// baked one would go stale the moment a layer changed. This is a regression
+// guard: the COPY was removed deliberately.
+func TestBaseImageDoesNotBakeAGuide(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("base", "Dockerfile"))
+	if err != nil {
+		t.Fatalf("read Dockerfile: %v", err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "COPY") && strings.Contains(line, "CLAUDE.md") {
+			t.Errorf("Dockerfile bakes a CLAUDE.md again: %q", strings.TrimSpace(line))
+		}
 	}
 }

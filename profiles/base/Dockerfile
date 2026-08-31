@@ -41,9 +41,9 @@ COPY dist/ccvm-done-linux-${TARGETARCH} /usr/local/bin/ccvm-done
 COPY dist/ccvm-init-linux-${TARGETARCH} /usr/local/bin/ccvm-init
 RUN chmod 0755 /usr/local/bin/ccvm-done /usr/local/bin/ccvm-init
 
-# Seeded so Claude discovers ccvm-done without being told the command name. A
-# command the model does not know about is not reachable from inside a session.
-COPY guest/CLAUDE.md /root/.claude/CLAUDE.md
+# No CLAUDE.md is baked here. ccvm composes one and writes it at spawn, so every
+# backend gets the same content and this image does not go stale when it changes.
+RUN mkdir -p /root/.claude
 
 WORKDIR /work
 

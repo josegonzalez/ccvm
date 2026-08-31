@@ -14,6 +14,7 @@ import (
 	"github.com/josegonzalez/ccvm/internal/backend"
 	"github.com/josegonzalez/ccvm/internal/code"
 	"github.com/josegonzalez/ccvm/internal/creds"
+	"github.com/josegonzalez/ccvm/internal/guide"
 	"github.com/josegonzalez/ccvm/internal/kubefwd"
 	"github.com/josegonzalez/ccvm/internal/profile"
 	"github.com/josegonzalez/ccvm/internal/provision"
@@ -43,6 +44,7 @@ func cmdUp(a *app, args []string) error {
 	fs.Var(&preCmds, "pre-install", "command to run before packages are installed, repeatable")
 	fs.Var(&postCmds, "post-install", "command to run after packages are installed, repeatable")
 	fs.Var(&setupCmds, "setup", "command to run after the code is in place, repeatable")
+	claudeMD := fs.String("claude-md", "", "extra CLAUDE.md to seed into the session, appended to the composed one")
 	if err := fs.Parse(args); err != nil {
 		return errUsage
 	}
@@ -253,6 +255,17 @@ func cmdUp(a *app, args []string) error {
 		unwind()
 		return &Fault{
 			Backend: chosen, Step: "install the Claude credential", Cause: err,
+			Cleanup: "machine destroyed; nothing left running.",
+		}
+	}
+
+	if err := a.seedGuide(b, handle, guide.Options{
+		Profile: *profileName, Source: a.profiles,
+		Home: a.home, Project: projectDir, File: *claudeMD,
+	}); err != nil {
+		unwind()
+		return &Fault{
+			Backend: chosen, Step: "compose the session CLAUDE.md", Cause: err,
 			Cleanup: "machine destroyed; nothing left running.",
 		}
 	}
@@ -645,6 +658,29 @@ func (a *app) installCredentials(b backend.Backend, h backend.Handle, spec backe
 	}
 	if err := a.pushString(b, h, string(trust), creds.GuestConfigFile, "600"); err != nil {
 		fmt.Fprintf(a.err, "ccvm: could not seed workspace trust: %v\n", err)
+	}
+	return nil
+}
+
+// seedGuide composes the session's CLAUDE.md and writes it into the machine.
+//
+// Composing fails loudly, because the only way it can is a --claude-md the user
+// named and ccvm could not read. Writing it fails softly, like the trust
+// seeding beside it: without the guide a session still works and ccvm-done is
+// still runnable, so refusing to start over it would cost more than it saves.
+func (a *app) seedGuide(b backend.Backend, h backend.Handle, o guide.Options) error {
+	layers, err := guide.Plan(o)
+	if err != nil {
+		return err
+	}
+	// docker cp needs the destination directory to exist, and a guest built
+	// from something other than the base image may not have it.
+	if _, err := b.Exec(a.ctx, h, "mkdir", "-p", filepath.Dir(guide.GuestFile)); err != nil {
+		fmt.Fprintf(a.err, "ccvm: could not seed the session CLAUDE.md: %v\n", err)
+		return nil
+	}
+	if err := a.pushString(b, h, guide.Render(layers), guide.GuestFile, "644"); err != nil {
+		fmt.Fprintf(a.err, "ccvm: could not seed the session CLAUDE.md: %v\n", err)
 	}
 	return nil
 }
