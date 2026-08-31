@@ -1422,3 +1422,75 @@ func writeFakeGuestBinary(t *testing.T, file string) {
 	}
 	t.Cleanup(func() { _ = os.Remove(path) })
 }
+
+// After `ccvm up --detach --remote-control` the tmux session does not exist
+// yet, so this attach is what creates it. Creating it with a bare `claude`
+// produced a session that could never be driven from claude.ai, with nothing
+// said about why.
+func TestAttachPreservesRemoteControlFromTheSessionRecord(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	seedMachine(t, f, "cc-demo", session.Session{
+		Name: "cc-demo", WorkDir: "/work", AuthMode: "login",
+	})
+
+	var argv []string
+	restore := attach.SetRunnerForTest(func(a []string) error {
+		argv = a
+		return nil
+	})
+	defer restore()
+
+	if err := cmdAttach(a, []string{"cc-demo"}); err != nil {
+		t.Fatalf("cmdAttach: %v", err)
+	}
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "--remote-control") {
+		t.Errorf("attach ran %q, want it to carry --remote-control", joined)
+	}
+}
+
+// A token session is not remote-controllable, so attach must not claim it is.
+func TestAttachOmitsRemoteControlForATokenSession(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	seedMachine(t, f, "cc-demo", session.Session{
+		Name: "cc-demo", WorkDir: "/work", AuthMode: "token",
+	})
+
+	var argv []string
+	restore := attach.SetRunnerForTest(func(a []string) error {
+		argv = a
+		return nil
+	})
+	defer restore()
+
+	if err := cmdAttach(a, []string{"cc-demo"}); err != nil {
+		t.Fatalf("cmdAttach: %v", err)
+	}
+	if joined := strings.Join(argv, " "); strings.Contains(joined, "--remote-control") {
+		t.Errorf("attach ran %q, want no --remote-control for a token session", joined)
+	}
+}
+
+// --yolo is a per-attach choice rather than a property of the machine, so it
+// has to be accepted here too or there is no way to ask for it on reattach.
+func TestAttachAcceptsYolo(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	seedMachine(t, f, "cc-demo", session.Session{Name: "cc-demo", WorkDir: "/work"})
+
+	var argv []string
+	restore := attach.SetRunnerForTest(func(a []string) error {
+		argv = a
+		return nil
+	})
+	defer restore()
+
+	if err := cmdAttach(a, []string{"-yolo", "cc-demo"}); err != nil {
+		t.Fatalf("cmdAttach: %v", err)
+	}
+	if joined := strings.Join(argv, " "); !strings.Contains(joined, "dangerously-skip-permissions") {
+		t.Errorf("attach ran %q, want --yolo honored", joined)
+	}
+}

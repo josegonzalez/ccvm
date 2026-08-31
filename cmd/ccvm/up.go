@@ -1071,22 +1071,54 @@ func (a *app) sshPortFor(name string) (int, error) {
 // the session exists and creates it otherwise, so a dropped connection detaches
 // rather than ending the session.
 func cmdAttach(a *app, args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: ccvm attach <name>")
+	fs := newFlags("attach", a)
+	yolo := fs.Bool("yolo", false, "run Claude with --dangerously-skip-permissions")
+	if err := fs.Parse(args); err != nil {
+		return errUsage
 	}
-	name := args[0]
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: ccvm attach [--yolo] <name>")
+	}
+	name := fs.Arg(0)
 	target, err := a.targetFor(name)
 	if err != nil {
 		return err
 	}
+
+	// The session record, not defaults. After `ccvm up --detach
+	// --remote-control` the tmux session does not exist yet, so this attach is
+	// what creates it - and creating it with a bare `claude` produces a session
+	// that can never be driven from claude.ai, with nothing to say why.
+	opts := attach.Options{
+		Target:       target,
+		SessionName:  name,
+		IdentityFile: a.sshKey.Private,
+		Yolo:         *yolo,
+	}
+	if rec, err := a.sessionNamed(name); err == nil {
+		opts.WorkDir = rec.WorkDir
+		opts.RemoteControl = rec.HoldsLogin()
+	}
+
 	stop, err := a.holdForward(name)
 	if err != nil {
 		return err
 	}
 	defer stop()
-	return attach.Run(attach.Options{
-		Target:       target,
-		SessionName:  name,
-		IdentityFile: a.sshKey.Private,
-	})
+	return attach.Run(opts)
+}
+
+// sessionNamed reads the record a machine carries, for the commands that are
+// given a name rather than a spec.
+func (a *app) sessionNamed(name string) (session.Session, error) {
+	machines, err := a.listAll(true)
+	if err != nil {
+		return session.Session{}, err
+	}
+	for _, m := range machines {
+		if m.Name == name {
+			return a.readSession(m)
+		}
+	}
+	return session.Session{}, fmt.Errorf("no machine named %q", name)
 }

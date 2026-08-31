@@ -16,6 +16,10 @@ import (
 	"github.com/josegonzalez/ccvm/internal/run"
 )
 
+// sshFailureCode is what ssh exits with when it could not establish the
+// connection at all, as opposed to relaying the remote command's status.
+const sshFailureCode = 255
+
 // TmuxSession is the tmux session name inside every guest. ccvm-done kills it
 // by this name, so the two must agree.
 const TmuxSession = "cc"
@@ -115,8 +119,15 @@ func Run(o Options) error {
 	if err := runInteractive(SSHArgs(o)); err != nil {
 		var ee *exec.ExitError
 		if ok := asExitError(err, &ee); ok {
-			// Quitting Claude with a non-zero status is a normal way to end a
-			// session, not a ccvm failure.
+			// 255 is ssh's own failure, not the remote command's: the machine
+			// is unreachable, the key was refused, the tunnel died. Treating it
+			// as a normal exit reported success for a session that never
+			// opened. Every other code belongs to Claude, and quitting it with
+			// one is a normal way to end a session.
+			if ee.ExitCode() == sshFailureCode {
+				return fmt.Errorf("could not reach the session over ssh (%s); "+
+					"check it is running with `ccvm ls`", o.Target)
+			}
 			return nil
 		}
 		return fmt.Errorf("open the session: %w", err)

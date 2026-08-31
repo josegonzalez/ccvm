@@ -2,6 +2,7 @@ package attach_test
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -223,4 +224,40 @@ func TestShellTreatsANonZeroExitAsTheResult(t *testing.T) {
 	if err := attach.Shell(attach.Options{Target: "cc-foo"}, "false"); err != nil {
 		t.Errorf("Shell = %v, want the exit status not treated as a ccvm error", err)
 	}
+}
+
+// ssh exits 255 when it could not connect at all. Reporting that as a clean
+// exit told the user their session ended normally when it never opened.
+func TestRunReportsSSHConnectionFailure(t *testing.T) {
+	restore := attach.SetRunnerForTest(func([]string) error {
+		return exitErr(255)
+	})
+	defer restore()
+
+	err := attach.Run(attach.Options{Target: "cc-gone"})
+	if err == nil {
+		t.Fatal("an unreachable machine reported success")
+	}
+	if !strings.Contains(err.Error(), "cc-gone") {
+		t.Errorf("err = %v, want it to name the target", err)
+	}
+}
+
+// Every other status is Claude's own, and quitting it non-zero is a normal way
+// to end a session rather than a ccvm failure.
+func TestRunTreatsRemoteExitCodesAsNormal(t *testing.T) {
+	restore := attach.SetRunnerForTest(func([]string) error {
+		return exitErr(1)
+	})
+	defer restore()
+
+	if err := attach.Run(attach.Options{Target: "cc-demo"}); err != nil {
+		t.Errorf("Run = %v, want a remote non-zero exit treated as normal", err)
+	}
+}
+
+// exitErr produces a real *exec.ExitError, since that is what Run inspects. A
+// hand-rolled error would not exercise the branch that matters.
+func exitErr(code int) error {
+	return exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
 }
