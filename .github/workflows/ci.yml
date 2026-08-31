@@ -150,7 +150,12 @@ jobs:
     # Non-gating on purpose. This depends on an unofficial third-party image,
     # and a flaky required check is one you learn to ignore.
     needs: [test]
-    if: github.event_name == 'schedule' || contains(github.event.head_commit.message, '[proxmox]')
+    # head_commit is null on pull_request, so the commit-message form can only
+    # ever fire on a push. The PR title is what a reviewer can actually set.
+    if: >-
+      github.event_name == 'schedule' ||
+      contains(github.event.head_commit.message, '[proxmox]') ||
+      contains(github.event.pull_request.title, '[proxmox]')
     continue-on-error: true
     runs-on: ubuntu-latest
     steps:

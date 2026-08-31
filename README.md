@@ -323,10 +323,18 @@ make itest          # integration; see CCVM_ITEST_BACKENDS
 ```
 
 The golden tests under `cmd/ccvm/testdata/script` run the real binary and
-compare what a user actually sees. "A clear error when a machine cannot be
-created" is a claim about exact output, and exact output is what unit tests are
-worst at: they assert a substring and miss the layout, the ordering, and the
-stray blank line.
+compare what a user actually sees: argument handling, contradictory flags, a
+missing credential, and the order those checks happen in. Reaching a failed
+`Create` needs a backend that fails on demand, which the golden runner cannot
+inject, so that case is asserted against the fake backend instead.
+
+**What CI does not cover.** Booting a guest on proxmox or orbstack is verified
+by hand, not by CI. Hosted runners have no nested virtualization, and there is
+no OrbStack on them at all, so the proxmox job exercises the control plane
+against a containerized PVE and stops short of a running guest. Run
+`make itest-local` before tagging a release; it is the only thing that proves a
+guest actually boots and is reachable, which is a bug class fixtures cannot
+catch.
 
 Integration skips are opt-in: name the backends in `CCVM_ITEST_BACKENDS` and the
 suite fails, rather than skips, if one is unavailable. A suite that silently

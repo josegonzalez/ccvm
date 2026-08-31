@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -1492,5 +1493,55 @@ func TestAttachAcceptsYolo(t *testing.T) {
 	}
 	if joined := strings.Join(argv, " "); !strings.Contains(joined, "dangerously-skip-permissions") {
 		t.Errorf("attach ran %q, want --yolo honored", joined)
+	}
+}
+
+// "A clear error when the machine cannot be created" is the requirement this
+// whole taxonomy exists for, and nothing exercised it: every other case fails
+// at flag validation or preflight, before Create is ever reached.
+func TestUpReportsACreateFailureClearly(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	f.CreateErr = errors.New("no space left on device")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	err := cmdUp(a, []string{"-detach", dir})
+	if err == nil {
+		t.Fatal("a failed Create reported success")
+	}
+
+	got := err.Error()
+	// Which backend, which step, and the underlying cause - a bare
+	// "failed to create" leaves nothing to act on.
+	for _, want := range []string{
+		"failed to create session machine",
+		"backend: docker",
+		"create machine cc-demo",
+		"no space left on device",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("error is missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// A machine that was never created must not be reported as destroyed: the
+// cleanup line is a claim about what happened, and a false one sends people
+// looking for a machine that does not exist.
+func TestUpDoesNotClaimCleanupWhenNothingWasCreated(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	f.CreateErr = errors.New("no space left on device")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	err := cmdUp(a, []string{"-detach", dir})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if len(f.Destroyed) != 0 {
+		t.Errorf("Destroyed = %v, want nothing destroyed", f.Destroyed)
+	}
+	if strings.Contains(err.Error(), "machine destroyed") {
+		t.Errorf("error claims cleanup that never happened:\n%s", err)
 	}
 }

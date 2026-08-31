@@ -8,10 +8,15 @@ import (
 
 // TestScript runs the golden files in testdata/script.
 //
-// The "clear error when a machine cannot be created" requirement is a claim
-// about exact output, and exact output is what unit tests are worst at
-// asserting: they check a substring and miss the layout, the ordering, and the
-// stray blank line. These run the real binary and compare what a user sees.
+// These cover what a user sees before a backend is ever touched: argument
+// handling, contradictory flags, a missing credential, and the ordering between
+// those checks. They run the real binary, so a regression in layout shows up
+// here rather than in a mock's idea of it.
+//
+// They deliberately do not cover a failed Create - reaching that needs a
+// backend that fails on demand, which the golden runner has no way to inject.
+// That case is asserted against the fake backend in TestUpReportsACreateFailure
+// instead.
 func TestMain(m *testing.M) {
 	// Main rather than the deprecated RunMain: Go collects coverage from the
 	// subprocesses itself now, so the commands no longer return exit codes.
