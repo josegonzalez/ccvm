@@ -50,6 +50,14 @@ func newPVEStub(t *testing.T) *pveStub {
 	return s
 }
 
+// paths returns the request paths seen so far, for asserting which family of
+// endpoints a call actually used.
+func (s *pveStub) paths() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.requests...)
+}
+
 func (s *pveStub) on(path string, h http.HandlerFunc) *pveStub {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -853,5 +861,105 @@ func TestProxmoxListFallsBackToTheAggregate(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].State != backend.StateRunning {
 		t.Errorf("machines = %+v, want the aggregate used as a fallback", got)
+	}
+}
+
+// --vm must actually clone a VM. Selecting the VM template id and then cloning
+// it through the container endpoints is the bug this guards: it fails deep in
+// the API with a bare 500, long after the point that chose the wrong path.
+func TestProxmoxVMKindUsesQemuEndpoints(t *testing.T) {
+	s := newPVEStub(t)
+	s.json("/api2/json/nodes", []any{map[string]any{"node": "pve1", "status": "online"}})
+	s.on("/api2/json/nodes/pve1/qemu/9100/clone", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": "UPID:pve1:0:0:0:qmclone::root@pam:"})
+	})
+	s.json("/api2/json/nodes/pve1/tasks/UPID:pve1:0:0:0:qmclone::root@pam:/status",
+		map[string]any{"status": "stopped", "exitstatus": "OK"})
+	// vmids come from the base (4000) plus the first free host offset, not from
+	// the cluster's nextid, so with no existing guests this is 4002.
+	s.on("/api2/json/nodes/pve1/qemu/4002/config", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": nil})
+	})
+
+	p, _ := newProxmox(t, s)
+	spec := pveSpec()
+	spec.Image = "9100"
+	spec.Kind = "qemu"
+
+	h, err := p.Create(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if h.Kind != "qemu" {
+		t.Errorf("handle Kind = %q, want qemu so Stop and Destroy reach the right endpoints", h.Kind)
+	}
+	for _, path := range s.paths() {
+		if strings.Contains(path, "/lxc/") {
+			t.Errorf("a VM create used a container endpoint: %s", path)
+		}
+	}
+}
+
+// A container template id passed with --vm, or a VM template id passed without
+// it, is named at preflight rather than surfacing as an HTTP 500 mid-clone.
+func TestProxmoxPreflightRejectsMismatchedTemplateKind(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		kind     string
+		tplType  string
+		wantHint string
+	}{
+		{"vm requested, container template", "qemu", "lxc", "vm_template"},
+		{"container requested, vm template", "lxc", "qemu", "--vm"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newPVEStub(t)
+			s.json("/api2/json/nodes", []any{map[string]any{"node": "pve1", "status": "online"}})
+			s.json("/api2/json/cluster/resources", []any{
+				map[string]any{"vmid": 9000, "node": "pve1", "type": tc.tplType, "template": 1},
+			})
+
+			p, _ := newProxmox(t, s)
+			spec := pveSpec()
+			spec.Kind = tc.kind
+
+			err := p.Preflight(context.Background(), spec)
+			if err == nil {
+				t.Fatal("expected a mismatched template kind to be refused")
+			}
+			if !strings.Contains(err.Error(), tc.tplType) {
+				t.Errorf("err = %v, want it to name what the template actually is", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantHint) {
+				t.Errorf("err = %v, want the fix to mention %q", err, tc.wantHint)
+			}
+		})
+	}
+}
+
+// A machine discovered by List carries its kind, so stopping or destroying it
+// later reaches the right endpoints without the caller remembering how it was
+// made.
+func TestProxmoxListCarriesGuestKind(t *testing.T) {
+	s := newPVEStub(t)
+	s.json("/api2/json/nodes", []any{map[string]any{"node": "pve1", "status": "online"}})
+	s.json("/api2/json/cluster/resources", []any{
+		map[string]any{"vmid": 9101, "node": "pve1", "type": "qemu", "name": "cc-demo", "status": "running", "tags": "ccvm"},
+	})
+	s.json("/api2/json/nodes/pve1/qemu/9101/status/current", map[string]any{"status": "running"})
+
+	p, _ := newProxmox(t, s)
+	machines, err := p.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(machines) != 1 {
+		t.Fatalf("machines = %v, want one", machines)
+	}
+	if machines[0].Kind != "qemu" {
+		t.Errorf("Kind = %q, want qemu", machines[0].Kind)
+	}
+	if got := machines[0].Handle().Kind; got != "qemu" {
+		t.Errorf("Handle().Kind = %q, want the kind to survive onto the handle", got)
 	}
 }

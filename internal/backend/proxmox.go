@@ -160,10 +160,17 @@ func (p *Proxmox) Preflight(ctx context.Context, s Spec) error {
 	if err != nil {
 		return err
 	}
+	want := p.kindFor(s)
 	for _, r := range res {
 		if r.VMID == tplID {
 			if r.Template == 0 {
 				return fmt.Errorf("vmid %d exists but is not a template; convert it with `pct template %d`", tplID, tplID)
+			}
+			// Cloning a qemu template through the lxc endpoints fails deep in
+			// the API with a bare 500, so mismatches are named here instead.
+			if r.Type != "" && r.Type != want {
+				return fmt.Errorf("vmid %d is a %s template but %s was requested; %s",
+					tplID, r.Type, want, vmKindHint(want))
 			}
 			return nil
 		}
@@ -171,12 +178,23 @@ func (p *Proxmox) Preflight(ctx context.Context, s Spec) error {
 	return fmt.Errorf("template vmid %d does not exist on this cluster", tplID)
 }
 
-func (p *Proxmox) kindFor(s Spec) string {
-	if p.Kind != "" {
-		return p.Kind
+// kindFor picks the guest technology for a new machine. --vm sets Spec.Kind;
+// p.Kind is the backend-wide override tests use.
+func kindOrDefault(kinds ...string) string {
+	for _, k := range kinds {
+		if k != "" {
+			return k
+		}
 	}
 	return "lxc"
 }
+
+func (p *Proxmox) kindFor(s Spec) string { return kindOrDefault(s.Kind, p.Kind) }
+
+// kindOf picks it for an existing machine. Start, Stop, and Destroy are handed
+// a Handle rather than a Spec, and a qemu guest answers on different endpoints
+// than an lxc one, so the handle has to carry which it is.
+func (p *Proxmox) kindOf(h Handle) string { return kindOrDefault(h.Kind, p.Kind) }
 
 // Create clones the template.
 //
@@ -243,7 +261,7 @@ func (p *Proxmox) Create(ctx context.Context, s Spec) (Handle, error) {
 			return Handle{}, fmt.Errorf("clone template %d on %s: %w", tplID, node, err)
 		}
 
-		h := Handle{Backend: "proxmox", Name: s.Name, ID: strconv.Itoa(vmid), Node: node}
+		h := Handle{Backend: "proxmox", Name: s.Name, ID: strconv.Itoa(vmid), Node: node, Kind: kind}
 		if err := p.configure(ctx, h, s, kind, vmid); err != nil {
 			// The guest exists but is unusable; leave nothing behind.
 			if task, derr := p.API.destroy(ctx, node, kind, vmid); derr == nil {
@@ -315,7 +333,7 @@ func (p *Proxmox) Start(ctx context.Context, h Handle) error {
 	if err != nil {
 		return err
 	}
-	task, err := p.API.status(ctx, h.Node, p.Kind, vmid, "start")
+	task, err := p.API.status(ctx, h.Node, p.kindOf(h), vmid, "start")
 	if err != nil {
 		return err
 	}
@@ -438,7 +456,7 @@ func (p *Proxmox) writeRecord(ctx context.Context, h Handle, src string) error {
 		return err
 	}
 	form := url.Values{"description": []string{string(data)}}
-	return p.API.setConfig(ctx, h.Node, p.Kind, vmid, form)
+	return p.API.setConfig(ctx, h.Node, p.kindOf(h), vmid, form)
 }
 
 func (p *Proxmox) readRecord(ctx context.Context, h Handle, dst string) error {
@@ -446,7 +464,7 @@ func (p *Proxmox) readRecord(ctx context.Context, h Handle, dst string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := p.API.getConfig(ctx, h.Node, p.Kind, vmid)
+	cfg, err := p.API.getConfig(ctx, h.Node, p.kindOf(h), vmid)
 	if err != nil {
 		return err
 	}
@@ -476,11 +494,15 @@ func (p *Proxmox) List(ctx context.Context) ([]Machine, error) {
 			ID:      strconv.Itoa(r.VMID),
 			Node:    r.Node,
 			State:   normalizePVEState(r.Status),
+			// The cluster already knows whether this is a container or a VM,
+			// so a machine discovered here can be stopped and destroyed
+			// without the caller having to remember how it was made.
+			Kind: r.Type,
 		}
 		// The aggregate lags reality by several seconds, so a machine created
 		// moments ago still reads as stopped there. Enumerate from it, then ask
 		// each guest for its actual state.
-		if live, err := p.API.currentStatus(ctx, r.Node, p.Kind, r.VMID); err == nil {
+		if live, err := p.API.currentStatus(ctx, r.Node, kindOrDefault(r.Type, p.Kind), r.VMID); err == nil {
 			m.State = normalizePVEState(live)
 		}
 		if addr, err := p.AddressFor(r.VMID); err == nil {
@@ -518,7 +540,7 @@ func (p *Proxmox) Stop(ctx context.Context, h Handle) error {
 	if err != nil {
 		return err
 	}
-	task, err := p.API.status(ctx, h.Node, p.Kind, vmid, "shutdown")
+	task, err := p.API.status(ctx, h.Node, p.kindOf(h), vmid, "shutdown")
 	if err != nil {
 		return err
 	}
@@ -532,10 +554,10 @@ func (p *Proxmox) Destroy(ctx context.Context, h Handle) error {
 	}
 	// A running guest cannot be destroyed; stopping first is not optional, and
 	// a failure here is not worth aborting teardown over.
-	if task, err := p.API.status(ctx, h.Node, p.Kind, vmid, "stop"); err == nil {
+	if task, err := p.API.status(ctx, h.Node, p.kindOf(h), vmid, "stop"); err == nil {
 		_ = p.API.waitTask(ctx, h.Node, task, pveTaskTimeout)
 	}
-	task, err := p.API.destroy(ctx, h.Node, p.Kind, vmid)
+	task, err := p.API.destroy(ctx, h.Node, p.kindOf(h), vmid)
 	if err != nil {
 		return err
 	}
@@ -613,4 +635,13 @@ func PVEErrorIsFatalForTest(err error) bool {
 		return pe.Fatal()
 	}
 	return false
+}
+
+// vmKindHint says which way the mismatch goes, since the fix differs: one is a
+// missing flag, the other is a template id in the wrong profile field.
+func vmKindHint(want string) string {
+	if want == "qemu" {
+		return "point [backend.proxmox].vm_template at a VM template"
+	}
+	return "pass --vm to use the VM template, or point lxc_template at a container template"
 }

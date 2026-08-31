@@ -64,6 +64,11 @@ type Spec struct {
 	WorkDir  string // where the code lands inside the machine
 	CodeMode string // mount | rsync | git | sshfs
 
+	// Kind selects the guest technology where a backend offers more than one.
+	// Proxmox reads it as "lxc" or "qemu"; --vm is what sets it. Empty means
+	// the backend's own default.
+	Kind string
+
 	CPUs   int
 	Memory string
 	Disk   string
@@ -90,6 +95,11 @@ type Handle struct {
 	ID      string // container id, vmid, pod/job name
 	Node    string // proxmox node; empty elsewhere
 	SSHPort int
+	// Kind is the guest technology, for backends that have more than one. It
+	// travels on the handle because Start, Stop, and Destroy are given one of
+	// these rather than a Spec, and a qemu guest answers on different endpoints
+	// than an lxc one.
+	Kind string
 }
 
 // Machine is a normalized listing row.
@@ -99,6 +109,7 @@ type Machine struct {
 	ID      string
 	State   string // running | stopped | pending | unknown
 	Node    string
+	Kind    string // proxmox guest technology: lxc or qemu; empty elsewhere
 	Profile string
 	Project string
 	TTL     string // duration, or "keep"
@@ -108,7 +119,7 @@ type Machine struct {
 
 // Handle builds the Handle addressing this machine.
 func (m Machine) Handle() Handle {
-	return Handle{Backend: m.Backend, Name: m.Name, ID: m.ID, Node: m.Node}
+	return Handle{Backend: m.Backend, Name: m.Name, ID: m.ID, Node: m.Node, Kind: m.Kind}
 }
 
 // KeepTTL marks a machine the reaper must not destroy.

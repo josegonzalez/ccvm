@@ -86,6 +86,7 @@ func cmdUp(a *app, args []string) error {
 		Project:   projectDir,
 		WorkDir:   "/work",
 		CodeMode:  mode,
+		Kind:      guestKind(*useVM),
 		CPUs:      cfg.Resources.CPUs,
 		Memory:    cfg.Resources.Memory,
 		Disk:      cfg.Resources.Disk,
@@ -818,6 +819,15 @@ func (a *app) printPlan(spec backend.Spec, chosen string, cfg *profile.Config, l
 		fmt.Fprintln(a.out, "  claude    --dangerously-skip-permissions")
 	}
 	return nil
+}
+
+// guestKind maps --vm onto the proxmox guest technology. Backends that have
+// only one kind ignore it.
+func guestKind(useVM bool) string {
+	if useVM {
+		return "qemu"
+	}
+	return "lxc"
 }
 
 // imageForBackend resolves what a backend builds a machine from. The word
