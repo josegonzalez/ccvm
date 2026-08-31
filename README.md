@@ -62,16 +62,37 @@ re-run it.
 ## Provisioning
 
 A machine can be prepared beyond its image, in the guest, before Claude starts.
-Layers run in order, each able to rely on the last:
+Work runs in phases, arranged around the two fixed points of installing packages
+and putting the code in place:
 
-1. `provision.sh` from the profile chain, parents first
-2. `[provision].packages` from the resolved profile
-3. `~/.config/ccvm/provision.sh`, your own preferences on every machine
-4. `<project>/.ccvm/provision.sh`, committed so anyone working on that repo gets it
-5. `--install pkg,pkg`, a one-off that always wins
+| Phase | What runs, in order | Is `/work` there? |
+| --- | --- | --- |
+| **pre** | `provision.sh` from the profile chain, parents first; `[provision].pre`; `--pre-install 'cmd'` | not guaranteed |
+| **packages** | `[provision].packages`; `--install pkg,pkg` | not guaranteed |
+| **post** | `[provision].post`; `~/.config/ccvm/provision.sh`; `<project>/.ccvm/provision.sh`; `--post-install 'cmd'` | not guaranteed |
+| **setup** | `[provision].setup`; `--setup 'cmd'` | **yes** |
 
-A failing layer aborts and destroys the machine. A half-provisioned session
-fails later for reasons that no longer point at the cause.
+**Anything that touches your code belongs in `setup`.** Whether `/work` is
+populated earlier depends on `--code`: a `mount` is attached when the machine is
+created, so it is there from the start, while `git` and `rsync` do not land
+until after the `post` phase. A command reading `/work` any earlier therefore
+works on the default and breaks the moment someone passes `--code git`. `setup`
+runs after the code is in place under every mode.
+
+The phase decides when something runs; the order within a phase is the usual
+one, profile then yours then the project's. So a project's `[provision].pre`
+runs before your own `provision.sh` — not an inversion, but the project asking
+for "before packages", which is what the key is for.
+
+`--pre-install`, `--post-install`, and `--setup` are repeatable rather than
+comma-separated, because a shell command may contain a comma.
+
+A failing command aborts and destroys the machine, naming the command that
+failed. A half-provisioned session fails later for reasons that no longer point
+at the cause.
+
+`--install` installs alongside `[provision].packages` rather than last, so
+everything after it can rely on those packages being present.
 
 A profile's `build.sh` is different: it bakes an image once, via
 `ccvm profiles build`. Build-time work belongs there, since running a full
@@ -81,6 +102,39 @@ promote to `build.sh` once it stabilizes.
 The project hook runs arbitrary code in the guest — that is the point, in a
 machine that is already disposable. It is the counterpart to a repository not
 being allowed to choose the image it runs on, which is enforced on the host.
+
+## Guiding Claude
+
+Every session starts with a `CLAUDE.md` at `~/.claude/CLAUDE.md` in the machine,
+composed on the host and written in at spawn. Layers, in order:
+
+1. ccvm's own guide, which is how Claude learns that `ccvm-done` ends the session
+2. `CLAUDE.md` from the profile chain, parents first
+3. `~/.config/ccvm/CLAUDE.md`, your own guidance on every machine
+4. `<project>/.ccvm/CLAUDE.md`, committed so anyone working on that repo gets it
+5. `--claude-md path.md`, a one-off that goes last
+
+**Your project's own `CLAUDE.md` needs no setup.** It arrives with your code and
+Claude Code reads it from the working directory, the same as on your laptop.
+The layers above are for guidance that has nowhere else to live: personal
+preferences, something a profile implies, or a note for one session.
+
+ccvm's layer is always first and cannot be turned off. A machine whose Claude
+cannot discover `ccvm-done` is one you have to clean up by hand.
+
+Missing layers are skipped, so most people have none of these files. A
+`--claude-md` that cannot be read is an error rather than a warning, since you
+named it. Each section is marked with an HTML comment, so from inside a machine
+you can see which layer contributed what.
+
+To reuse your laptop's own memory verbatim, symlink it:
+
+```sh
+ln -s ~/.claude/CLAUDE.md ~/.config/ccvm/CLAUDE.md
+```
+
+It is not copied automatically, because that file is usually full of host paths
+and personal notes that mean nothing inside a disposable Debian guest.
 
 ## Getting the code in
 
@@ -118,7 +172,10 @@ image = "ccvm/go:latest"
 cpus = 4; memory = "8G"
 
 [provision]
+pre      = ["update-ca-certificates"]
 packages = ["delve", "golangci-lint"]
+post     = ["git config --global init.defaultBranch main"]
+setup    = ["go mod download"]
 ```
 
 Configuration is layered, later winning: built-in defaults, the `extends` chain,
@@ -126,6 +183,11 @@ the profile, `~/.config/ccvm/profile.toml`, the project's `.ccvm/profile.toml`,
 then flags. Scalars override, `[env]` and `[backend.*]` merge per key, and
 `[provision].packages` accumulates down the chain unless a layer sets
 `packages_replace`.
+
+`pre`, `post`, and `setup` accumulate the same way, with `pre_replace`,
+`post_replace`, and `setup_replace` to opt out. Unlike packages they are not
+deduplicated: a package list is a set, while a command list is a sequence, and
+two layers asking for the same command both meant to run it.
 
 A project's `.ccvm/profile.toml` may size a machine but may not set
 `[backend.*]` or `[env]`. Parsing TOML already stops a repository executing
