@@ -1618,3 +1618,23 @@ func TestUpWritesProfileEnvIntoTheGuest(t *testing.T) {
 		t.Errorf("env file lost the profile's [env]:\n%s", env)
 	}
 }
+
+// The tunnel the mount rides on lives only as long as this process, so a
+// detached sshfs session would return to a directory that silently stopped
+// updating. Refused up front, where the cause is still visible.
+func TestUpRefusesDetachedSSHFS(t *testing.T) {
+	f := backendtest.NewFake("docker")
+	a, _, _ := newTestApp(t, f)
+	dir := newProject(t, "demo")
+
+	err := cmdUp(a, []string{"-detach", "-code", "sshfs", dir})
+	if err == nil {
+		t.Fatal("a detached sshfs session was allowed")
+	}
+	if !strings.Contains(err.Error(), "sshfs") || !strings.Contains(err.Error(), "rsync") {
+		t.Errorf("err = %v, want it to name the mode and the alternative", err)
+	}
+	if len(f.Destroyed) != 1 {
+		t.Errorf("Destroyed = %v, want the machine cleaned up", f.Destroyed)
+	}
+}

@@ -28,7 +28,13 @@ func TestCheck(t *testing.T) {
 		{code.Mount, "k8s", true},
 		{code.Git, "k8s", false},
 		{code.Rsync, "k8s", false},
-		{"sshfs", "proxmox", true},
+		// sshfs is the live-mount story for a remote guest, which is what
+		// proxmox is. It was advertised in the flag help and unimplemented,
+		// and this case pinned that mismatch as correct.
+		{code.Sshfs, "proxmox", false},
+		// Not on k8s: the ssh path there is itself a port-forward, and nesting
+		// a reverse tunnel inside it is more fragile than a clone.
+		{code.Sshfs, "k8s", true},
 		{"nonsense", "docker", true},
 	}
 	for _, tt := range tests {
@@ -273,5 +279,73 @@ func TestRsyncMissingInGuestNamesTheFix(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "profiles build") {
 		t.Errorf("err = %v, want it to name the fix", err)
+	}
+}
+
+// The mount runs inside the guest and reaches back to this machine, so the
+// command has to name this machine's user and the host-side project path, and
+// point at the tunnel's port rather than a real sshd port.
+func TestSSHFSMountCommand(t *testing.T) {
+	b := backendtest.NewFake("proxmox")
+	b.Seed(backend.Machine{Name: "cc-demo"}, nil)
+	h := backend.Handle{Backend: "proxmox", Name: "cc-demo"}
+
+	err := code.Materialize(context.Background(), code.Options{
+		Mode:    code.Sshfs,
+		Project: "/Users/me/src/demo",
+		WorkDir: "/work",
+		Backend: b,
+		Handle:  h,
+	})
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+
+	var call string
+	for _, argv := range b.ExecCalls() {
+		if len(argv) > 0 && argv[0] == "sshfs" {
+			call = strings.Join(argv, " ")
+		}
+	}
+	if call == "" {
+		t.Fatalf("no sshfs command ran in the guest; calls were %v", b.ExecCalls())
+	}
+	for _, want := range []string{"/Users/me/src/demo", "/work", "127.0.0.1", "2222", "reconnect"} {
+		if !strings.Contains(call, want) {
+			t.Errorf("sshfs call = %q, missing %q", call, want)
+		}
+	}
+}
+
+// A guest without sshfs must say so, and say what to do, rather than failing
+// inside a mount command nobody can read.
+func TestSSHFSRefusesAGuestWithoutIt(t *testing.T) {
+	b := backendtest.NewFake("proxmox")
+	b.Seed(backend.Machine{Name: "cc-demo"}, nil)
+	b.ExecErrOn = "command -v sshfs"
+
+	err := code.Materialize(context.Background(), code.Options{
+		Mode: code.Sshfs, Project: "/p", WorkDir: "/work",
+		Backend: b, Handle: backend.Handle{Name: "cc-demo"},
+	})
+	if err == nil {
+		t.Fatal("expected a refusal when the guest has no sshfs")
+	}
+	for _, want := range []string{"sshfs", "rsync"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want it to mention %q", err, want)
+		}
+	}
+}
+
+// The tunnel binds a port in the guest that reaches this machine's sshd, and
+// must fail rather than run without the forward - otherwise the mount would be
+// attempted through a tunnel that is not there.
+func TestSSHFSTunnelArgs(t *testing.T) {
+	got := strings.Join(code.SSHFSTunnelArgs("root@10.0.0.5", "/keys/id"), " ")
+	for _, want := range []string{"-N", "-R 2222:localhost:22", "ExitOnForwardFailure=yes", "-i /keys/id", "root@10.0.0.5"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("tunnel args = %q, missing %q", got, want)
+		}
 	}
 }

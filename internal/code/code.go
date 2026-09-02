@@ -23,6 +23,7 @@ const (
 	Mount = "mount"
 	Rsync = "rsync"
 	Git   = "git"
+	Sshfs = "sshfs"
 )
 
 // Supported maps each mode to the backends that can serve it.
@@ -33,10 +34,15 @@ const (
 // remote cluster, with no filesystem in common to attach. Live editing there
 // is what rsync and a reverse tunnel are for, so mount is refused rather than
 // accepted and silently producing an empty /work.
+// sshfs is what gives a remote guest a live view of the project: it mounts this
+// machine from inside the guest, over a reverse tunnel. Not offered on k8s,
+// where the ssh connection is itself a port-forward and nesting a tunnel inside
+// it is more fragile than the clone it would replace.
 var Supported = map[string][]string{
 	Mount: {"docker", "orbstack"},
 	Rsync: {"docker", "orbstack", "proxmox", "k8s"},
 	Git:   {"docker", "orbstack", "proxmox", "k8s"},
+	Sshfs: {"docker", "orbstack", "proxmox"},
 }
 
 // defaultExcludes are paths never worth copying into a session.
@@ -115,13 +121,16 @@ func Materialize(ctx context.Context, o Options) error {
 		return cloneRepo(ctx, o)
 	case Rsync:
 		return syncIn(ctx, o)
+	case Sshfs:
+		return mountSSHFS(ctx, o)
 	default:
 		return fmt.Errorf("unknown code mode %q", o.Mode)
 	}
 }
 
-// SyncBack returns changes to the host. Only rsync has anything to do: a mount
-// is already live, and a clone's work belongs in a commit.
+// SyncBack returns changes to the host. Only rsync has anything to do: mount
+// and sshfs are already live on the host, and a clone's work belongs in a
+// commit.
 func SyncBack(ctx context.Context, o Options) error {
 	if o.Mode != Rsync {
 		return nil

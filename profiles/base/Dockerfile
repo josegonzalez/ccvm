@@ -11,7 +11,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git openssh-server tmux ripgrep jq rsync \
+      ca-certificates curl git openssh-server tmux ripgrep jq rsync sshfs \
       build-essential procps less sudo \
     && rm -rf /var/lib/apt/lists/*
 

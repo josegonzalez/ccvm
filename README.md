@@ -147,12 +147,21 @@ docker and orbstack, `rsync` on proxmox, `git` on kubernetes.
 | `mount` | The host directory is attached live. Nothing is copied. | docker, orbstack |
 | `rsync` | Copied in at spawn and back out when the session ends. | all |
 | `git` | Cloned from origin at the branch you have checked out. Uncommitted work stays behind. | all |
+| `sshfs` | The guest mounts this machine over a reverse tunnel, so edits are live in both directions. | docker, orbstack, proxmox |
 
 `mount` needs a filesystem the host and the guest share, which is why it exists
 on the two local backends and nowhere else. kubernetes has no host filesystem to
 reach at all; proxmox runs the guest on a remote cluster while your project sits
 on this machine. Both refuse `mount` rather than accepting it and leaving `/work`
 silently empty.
+
+`sshfs` is how a remote guest gets a live view instead: rather than attaching a
+shared filesystem, the guest mounts *this* machine over a reverse tunnel. That
+needs Remote Login enabled here, `sshfs` present in the guest, and ccvm running
+for as long as the mount is used - the tunnel is held by the process, the same
+way a kubernetes port-forward is, so `--code sshfs` is refused with `--detach`
+rather than leaving a session reading a directory that stopped updating. It is
+not the default anywhere for those reasons; proxmox defaults to `rsync`.
 
 Under `rsync` the machine holds the only copy of anything edited inside it, so
 `ccvm rm` returns changes before destroying and refuses if it cannot.

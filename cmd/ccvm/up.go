@@ -313,6 +313,37 @@ func cmdUp(a *app, args []string) error {
 		}
 	}
 
+	// The reverse tunnel the mount rides on lives only as long as this process,
+	// so a detached sshfs session would come back to a dead mount. Refused
+	// rather than left to fail later, when the cause is no longer visible.
+	if mode == code.Sshfs && *detach {
+		unwind()
+		return &Fault{
+			Backend: chosen,
+			Step:    "put the code in place (--code sshfs)",
+			Cause:   fmt.Errorf("--code sshfs cannot be detached: the mount lives only while ccvm holds the tunnel"),
+			Fix:     "use --code rsync for a detached session, or drop --detach",
+			Cleanup: "machine destroyed; nothing left running.",
+		}
+	}
+
+	var tunnel *sshfsTunnel
+	if mode == code.Sshfs {
+		tunnel, err = startSSHFSTunnel(a, b.SSHTarget(handle))
+		if err != nil {
+			unwind()
+			return &Fault{
+				Backend: chosen,
+				Step:    "open the reverse tunnel --code sshfs needs",
+				Cause:   err,
+				Fix:     "enable Remote Login on this machine, or use --code rsync",
+				Cleanup: "machine destroyed; nothing left running.",
+			}
+		}
+		rollback = append(rollback, func() { tunnel.Stop() })
+		defer tunnel.Stop()
+	}
+
 	codeOpts := code.Options{
 		Mode:         mode,
 		Project:      projectDir,
