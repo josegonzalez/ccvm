@@ -300,13 +300,10 @@ func TestReadSessionRecordFromStoppedMachine(t *testing.T) {
 		if controlPlaneOnly(name) {
 			t.Skip("guest boot needs a hypervisor")
 		}
-		// k8s is exempt: stopping a session deletes its pod, which takes the
-		// filesystem with it. That is why k8s leans on the cluster's own
-		// activeDeadlineSeconds and ttlSecondsAfterFinished rather than on a
-		// reaper reading a record back — see TestK8sJobCarriesNativeTTL.
-		if name == "k8s" {
-			t.Skip("a stopped k8s session has no filesystem to read; its TTL is the cluster's own")
-		}
+		// k8s used to be exempt here, because stopping a session deletes its
+		// pod and takes the filesystem with it. The record is now mirrored onto
+		// the Job, which outlives the pod, so the contract holds on every
+		// backend and this is worth asserting rather than skipping.
 		stopper, ok := b.(interface {
 			Stop(context.Context, backend.Handle) error
 		})

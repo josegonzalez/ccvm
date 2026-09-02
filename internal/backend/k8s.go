@@ -363,9 +363,29 @@ func (k *K8s) Exec(ctx context.Context, h Handle, argv ...string) ([]byte, error
 	return k.Runner.Run(ctx, full...)
 }
 
+// k8sSessionAnnotation holds a copy of the session record on the Job itself.
+//
+// A Job outlives the pod that ran it, so this is the only copy that survives a
+// finished session - and the reaper has to read a TTL from exactly that.
+const k8sSessionAnnotation = "ccvm/session"
+
 func (k *K8s) Push(ctx context.Context, h Handle, src, dst string) error {
+	// The record is mirrored onto the Job as well as written into the pod. The
+	// pod's copy is what ccvm-done reads from inside the session; the Job's is
+	// what ccvm reads once the pod is gone.
+	if dst == SessionFile {
+		if err := k.annotateSession(ctx, h, src); err != nil {
+			return err
+		}
+	}
+
 	pod, err := k.podName(ctx, h)
 	if err != nil {
+		// A finished Job has no pod. The annotation above already captured the
+		// record, so there is nothing further to do and nothing to report.
+		if dst == SessionFile {
+			return nil
+		}
 		return err
 	}
 	// kubectl cp needs the destination directory to exist.
@@ -378,12 +398,18 @@ func (k *K8s) Push(ctx context.Context, h Handle, src, dst string) error {
 	return err
 }
 
-// Pull works only while the pod exists. A finished Job's pod is gone, so k8s
-// relies on the cluster's own TTL rather than on reading a record back from a
-// stopped machine.
+// Pull reads a file out of the pod, falling back to the Job for the session
+// record.
+//
+// A finished Job's pod is gone, so a record read from the pod alone would fail
+// for exactly the machines the reaper needs to inspect - and a machine whose
+// TTL cannot be read is never collected.
 func (k *K8s) Pull(ctx context.Context, h Handle, src, dst string) error {
 	pod, err := k.podName(ctx, h)
 	if err != nil {
+		if src == SessionFile {
+			return k.readSessionAnnotation(ctx, h, dst)
+		}
 		return err
 	}
 	_, err = k.Runner.Run(ctx, k.kubectl("cp", fmt.Sprintf("%s/%s:%s", k.namespace(), pod, src), dst)...)
@@ -488,3 +514,33 @@ func init() {
 // applied. The manifest goes through a temp file that Create removes, so there
 // is no other way to inspect it.
 func (k *K8s) ManifestForTest(s Spec) ([]byte, error) { return k.jobManifest(s) }
+
+// annotateSession copies the record onto the Job, where it survives the pod.
+func (k *K8s) annotateSession(ctx context.Context, h Handle, src string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	_, err = k.Runner.Run(ctx, k.kubectl("annotate", "--overwrite",
+		"job/"+h.Name, k8sSessionAnnotation+"="+string(data))...)
+	if err != nil {
+		return fmt.Errorf("record the session on job %s: %w", h.Name, err)
+	}
+	return nil
+}
+
+// readSessionAnnotation writes the Job's copy of the record to a local file, so
+// callers see the same thing they would have read out of the pod.
+func (k *K8s) readSessionAnnotation(ctx context.Context, h Handle, dst string) error {
+	// Bracket notation, because the key contains a slash and dot notation would
+	// read it as two path elements.
+	out, err := k.Runner.Run(ctx, k.kubectl("get", "job", h.Name, "-o",
+		"jsonpath={.metadata.annotations['"+k8sSessionAnnotation+"']}")...)
+	if err != nil {
+		return fmt.Errorf("read the session record from job %s: %w", h.Name, err)
+	}
+	if len(strings.TrimSpace(string(out))) == 0 {
+		return fmt.Errorf("job %s carries no session record", h.Name)
+	}
+	return os.WriteFile(dst, out, 0o600)
+}

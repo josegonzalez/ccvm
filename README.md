@@ -347,8 +347,7 @@ skips reports green while testing nothing.
 The suite asserts the Backend contract rather than any one implementation, so a
 backend inherits all of it by registering. Where a backend genuinely cannot meet
 a claim, it is skipped with the reason: k8s reports pull failures from the pod's
-events rather than from preflight, and a stopped k8s session has no filesystem
-to read a TTL back from.
+events rather than from preflight.
 
 CI covers docker and k8s, the latter on `kind`. Proxmox gets its control plane
 exercised against a containerized PVE pinned by digest, which catches upstream

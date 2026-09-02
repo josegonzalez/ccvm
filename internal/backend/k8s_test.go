@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -400,5 +401,56 @@ func TestK8sRealFailureIsNotSilenced(t *testing.T) {
 	}
 	if errorsIs(err, backend.ErrNotConfigured) {
 		t.Errorf("err = %v, want a real failure reported rather than silenced", err)
+	}
+}
+
+// A Job outlives the pod that ran it. Recording the session only inside the pod
+// meant a finished session could never be read back, so the reaper had no TTL
+// to act on and those Jobs were left to the cluster alone.
+func TestK8sSessionRecordSurvivesThePod(t *testing.T) {
+	f := run.NewFake()
+	f.OnContaining("kubectl", "get", "pods").Fail(1, "No resources found")
+	f.OnContaining("kubectl", "annotate").Stdout("job.batch/cc-demo annotated")
+	f.OnContaining("kubectl", "get", "job").Stdout("name = \"cc-demo\"\nttl = \"1h\"\n")
+
+	k := backend.NewK8s(f, backend.Config{KubeNamespace: "ccvm"})
+	h := backend.Handle{Backend: "k8s", Name: "cc-demo"}
+
+	src := filepath.Join(t.TempDir(), "session.toml")
+	if err := os.WriteFile(src, []byte("name = \"cc-demo\"\nttl = \"1h\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The pod is already gone, which is exactly when this has to work.
+	if err := k.Push(context.Background(), h, src, backend.SessionFile); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if !f.Ran("kubectl", "annotate") {
+		t.Error("the record was not written where it outlives the pod")
+	}
+
+	dst := filepath.Join(t.TempDir(), "back.toml")
+	if err := k.Pull(context.Background(), h, backend.SessionFile, dst); err != nil {
+		t.Fatalf("Pull from a finished job: %v", err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "cc-demo") {
+		t.Errorf("record = %q, want the one that was pushed", got)
+	}
+}
+
+// Any other file still needs a live pod, and says so rather than pretending.
+func TestK8sPullOfAnOrdinaryFileStillNeedsAPod(t *testing.T) {
+	f := run.NewFake()
+	f.OnContaining("kubectl", "get", "pods").Fail(1, "No resources found")
+
+	k := backend.NewK8s(f, backend.Config{KubeNamespace: "ccvm"})
+	h := backend.Handle{Backend: "k8s", Name: "cc-demo"}
+
+	err := k.Pull(context.Background(), h, "/work/main.go", filepath.Join(t.TempDir(), "out"))
+	if err == nil {
+		t.Fatal("expected an error reading a file from a machine with no pod")
 	}
 }

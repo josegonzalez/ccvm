@@ -187,6 +187,8 @@ func TestK8sPushCreatesDestinationDirectory(t *testing.T) {
 	f.OnContaining("kubectl", "get", "pods").Stdout("cc-foo-abc\n")
 	f.OnContaining("kubectl", "exec").Stdout("")
 	f.OnContaining("kubectl", "cp").Stdout("")
+	// The session record is also mirrored onto the Job, so it outlives the pod.
+	f.OnContaining("kubectl", "annotate").Stdout("")
 
 	src := filepath.Join(t.TempDir(), "session.toml")
 	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
