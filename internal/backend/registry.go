@@ -33,6 +33,17 @@ type Config struct {
 	// ProxmoxVMIDBase anchors the vmid-to-address mapping. A guest's host octet
 	// is vmid minus this.
 	ProxmoxVMIDBase int
+	// ProxmoxNodeSSH is a root ssh target for a cluster node, e.g. root@pve1.
+	//
+	// Building a template needs it: the API can create and destroy a guest but
+	// cannot run a command inside one, and the first template has no ccvm key
+	// in it yet, so there is no way in over ssh. `pct` on the node is the only
+	// path, which is the same assumption the reaper's cron install already
+	// makes.
+	ProxmoxNodeSSH string
+	// ProxmoxOSTemplate is the distro tarball a template is built from, e.g.
+	// local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst.
+	ProxmoxOSTemplate string
 	// ProxmoxSSHKey is the identity used to reach guests.
 	ProxmoxSSHKey string
 

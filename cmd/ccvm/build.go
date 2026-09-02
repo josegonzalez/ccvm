@@ -30,9 +30,7 @@ func (a *app) profilesBuild(name, backendName string, args []string) error {
 	case "orbstack":
 		return a.buildOrbstackTemplate(name, cfg)
 	case "proxmox":
-		return fmt.Errorf("building proxmox templates is not implemented yet; " +
-			"build one by hand with packer, convert it with `pct template <vmid>`, " +
-			"and point [backend.proxmox].lxc_template at it")
+		return a.buildProxmoxTemplate(name, cfg)
 	default:
 		return fmt.Errorf("unknown backend %q", backendName)
 	}

@@ -249,24 +249,23 @@ docker, orbstack, and kubernetes. **The template must already contain ccvm's
 public key** in `/root/.ssh/authorized_keys`, or every guest comes up
 unreachable.
 
-Building one, from a node:
+Build one with:
 
 ```
-pveam update && pveam download local debian-13-standard_13.6-1_amd64.tar.zst
-pct create 9000 local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst \
-    --hostname ccvm-base --cores 2 --memory 2048 --rootfs local:8 \
-    --net0 name=eth0,bridge=vmbr0,ip=dhcp \
-    --features nesting=1,keyctl=1 --unprivileged 1
-pct start 9000
-pct push 9000 profiles/base/build.sh /root/build.sh --perms 755
-pct exec 9000 -- sh /root/build.sh
-pct exec 9000 -- mkdir -p /root/.ssh
-pct push 9000 ~/.ssh/ccvm_ed25519.pub /root/.ssh/authorized_keys --perms 600
-pct exec 9000 -- chown -R root:root /root/.ssh
-pct stop 9000 && pct template 9000
+export CCVM_PROXMOX_NODE_SSH=root@pve1
+export CCVM_PROXMOX_OSTEMPLATE=local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst
+ccvm profiles build base --backend proxmox
 ```
 
-Then point a profile's `[backend.proxmox].lxc_template` at 9000.
+That runs the whole recipe on the node - create, provision with the profile's
+`build.sh`, install ccvm's public key and the guest binaries, then `pct
+template`. It needs root ssh to a node because the Proxmox API can create and
+destroy a guest but cannot run a command inside one, and the first template has
+no ccvm key in it yet, so there is no way in over ssh either. That is the same
+node access the reaper's cron install already assumes.
+
+`pveam available` lists the tarballs; `pveam download local <name>` fetches one.
+The vmid comes from the profile's `[backend.proxmox].lxc_template`.
 
 Settings come from the environment, and the network ones are not optional if
 your cluster differs from the defaults:

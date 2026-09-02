@@ -137,6 +137,10 @@ type app struct {
 	ssh      sshcfg.File
 	sshKey   sshkey.Pair
 	backends map[string]backend.Backend
+	// backendCfg is the environment-derived settings the backends were built
+	// from, kept for the commands that need a setting no Backend method
+	// exposes - building a proxmox template needs node access.
+	backendCfg backend.Config
 }
 
 func newApp(ctx context.Context, verbose bool, stdout, stderr io.Writer) (*app, error) {
@@ -179,16 +183,17 @@ func newApp(ctx context.Context, verbose bool, stdout, stderr io.Writer) (*app, 
 	}
 
 	return &app{
-		ctx:      ctx,
-		home:     home,
-		verbose:  verbose,
-		out:      stdout,
-		err:      stderr,
-		runner:   runner,
-		profiles: profile.DefaultSource(home, profiles.FS()),
-		ssh:      sshcfg.Default(home),
-		sshKey:   key,
-		backends: backends,
+		ctx:        ctx,
+		backendCfg: cfg,
+		home:       home,
+		verbose:    verbose,
+		out:        stdout,
+		err:        stderr,
+		runner:     runner,
+		profiles:   profile.DefaultSource(home, profiles.FS()),
+		ssh:        sshcfg.Default(home),
+		sshKey:     key,
+		backends:   backends,
 	}, nil
 }
 
@@ -205,13 +210,15 @@ func backendConfig() backend.Config {
 		// The network settings are not optional in practice: a cluster whose
 		// bridge is not vmbr0, or whose free subnet is not the default, cannot
 		// be used at all without them.
-		ProxmoxBridge:   os.Getenv("CCVM_PROXMOX_BRIDGE"),
-		ProxmoxSubnet:   os.Getenv("CCVM_PROXMOX_SUBNET"),
-		ProxmoxGateway:  os.Getenv("CCVM_PROXMOX_GATEWAY"),
-		ProxmoxVMIDBase: envInt("CCVM_PROXMOX_VMID_BASE"),
-		ProxmoxSSHKey:   os.Getenv("CCVM_PROXMOX_SSH_KEY"),
-		KubeNamespace:   envOrDefault("CCVM_KUBE_NAMESPACE", "default"),
-		KubeContext:     os.Getenv("CCVM_KUBE_CONTEXT"),
+		ProxmoxBridge:     os.Getenv("CCVM_PROXMOX_BRIDGE"),
+		ProxmoxSubnet:     os.Getenv("CCVM_PROXMOX_SUBNET"),
+		ProxmoxGateway:    os.Getenv("CCVM_PROXMOX_GATEWAY"),
+		ProxmoxVMIDBase:   envInt("CCVM_PROXMOX_VMID_BASE"),
+		ProxmoxNodeSSH:    os.Getenv("CCVM_PROXMOX_NODE_SSH"),
+		ProxmoxOSTemplate: os.Getenv("CCVM_PROXMOX_OSTEMPLATE"),
+		ProxmoxSSHKey:     os.Getenv("CCVM_PROXMOX_SSH_KEY"),
+		KubeNamespace:     envOrDefault("CCVM_KUBE_NAMESPACE", "default"),
+		KubeContext:       os.Getenv("CCVM_KUBE_CONTEXT"),
 	}
 }
 
