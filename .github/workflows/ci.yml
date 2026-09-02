@@ -19,6 +19,7 @@ env:
 
 jobs:
   lint:
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -55,6 +56,7 @@ jobs:
           install-mode: goinstall
 
   test:
+    timeout-minutes: 20
     # macOS is not optional: ccvm manipulates a Mac's SSH config, ports, and
     # local state, and path handling differs.
     strategy:
@@ -86,6 +88,7 @@ jobs:
           }'
 
   build:
+    timeout-minutes: 10
     # The guest binaries are the ones most likely to break unnoticed, since
     # nothing on the Mac exercises them.
     runs-on: ubuntu-latest
@@ -102,6 +105,7 @@ jobs:
           retention-days: 7
 
   integration-docker:
+    timeout-minutes: 20
     needs: [test]
     runs-on: ubuntu-latest
     steps:
@@ -121,6 +125,7 @@ jobs:
         run: go test -tags=integration -count=1 -timeout 20m ./...
 
   integration-k8s:
+    timeout-minutes: 25
     needs: [test]
     runs-on: ubuntu-latest
     steps:
@@ -142,6 +147,10 @@ jobs:
         run: go test -tags=integration -count=1 -timeout 20m ./...
 
   integration-proxmox:
+    # Bounded because it was not: a hung `docker run` on the weekly schedule ran
+    # to GitHub's 6-hour ceiling before being killed. A job that cannot finish
+    # should fail in minutes, not burn a runner for a day.
+    timeout-minutes: 30
     # Hosted runners have no nested virtualization, so guest boot is out of
     # reach. A containerized PVE still exercises the real control plane, which
     # is what frozen httptest fixtures cannot: they never notice an upstream
